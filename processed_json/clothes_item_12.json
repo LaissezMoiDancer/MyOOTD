@@ -1,5 +1,5 @@
 {
-  "id": "item_0001",
+  "id": "item_0012",
   "name": "Varsity Jacket with Embroidered Dog and Hearts",
   "category": [
     "Outerwear"
@@ -8,5 +8,5 @@
   "formality": [
     "Casual"
   ],
-  "image_path": "assets/item_0001.jpg"
+  "image_path": "assets/clothes_item_12.jpg"
 }

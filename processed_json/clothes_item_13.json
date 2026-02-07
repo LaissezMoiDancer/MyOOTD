@@ -1,5 +1,5 @@
 {
-  "id": "item_0001",
+  "id": "item_0013",
   "name": "Olive Green Utility Jacket",
   "category": [
     "Top",
@@ -9,5 +9,5 @@
   "formality": [
     "Casual"
   ],
-  "image_path": "assets/olive_green_utility_jacket.jpg"
+  "image_path": "assets/clothes_item_13.jpg"
 }

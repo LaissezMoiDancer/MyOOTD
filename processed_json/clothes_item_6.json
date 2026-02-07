@@ -1,5 +1,5 @@
 {
-  "id": "item_0001",
+  "id": "item_0006",
   "name": "Red Plaid Flannel Shirt",
   "category": [
     "Top"
@@ -8,5 +8,5 @@
   "formality": [
     "Casual"
   ],
-  "image_path": "assets/red_plaid_flannel_shirt.jpg"
+  "image_path": "assets/clothes_item_6.jpg"
 }

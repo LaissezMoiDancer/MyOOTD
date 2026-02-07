@@ -1,5 +1,5 @@
 {
-  "id": "item_0001",
+  "id": "item_0002",
   "name": "Red Gingham Peter Pan Collar Dress",
   "category": [
     "Top",
@@ -10,5 +10,5 @@
     "Casual",
     "Semi-Formal"
   ],
-  "image_path": "assets/red_gingham_peter_pan_collar_dress.jpg"
+  "image_path": "assets/clothes_item_2.jpg"
 }

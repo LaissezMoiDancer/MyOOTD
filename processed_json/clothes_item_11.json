@@ -1,5 +1,5 @@
 {
-  "id": "item_0001",
+  "id": "item_0011",
   "name": "Banff National Park Hoodie",
   "category": [
     "Top",
@@ -9,5 +9,5 @@
   "formality": [
     "Casual"
   ],
-  "image_path": "assets/banff_hoodie.jpg"
+  "image_path": "assets/clothes_item_11.jpg"
 }

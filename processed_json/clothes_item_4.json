@@ -1,0 +1,13 @@
+{
+  "id": "item_0004",
+  "name": "Orange Tie-Strap A-Line Dress",
+  "category": [
+    "Top",
+    "Bottom"
+  ],
+  "warmth_rating": 2,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/clothes_item_4.jpg.jpg"
+}
