@@ -1,0 +1,14 @@
+{
+  "id": "item_001",
+  "name": "Tiered Floral Maxi Dress",
+  "category": [
+    "Top",
+    "Bottom"
+  ],
+  "warmth_rating": 2,
+  "formality": [
+    "Casual",
+    "Semi-Formal"
+  ],
+  "image_path": "assets/item_001.jpg"
+}

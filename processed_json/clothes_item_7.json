@@ -1,0 +1,13 @@
+{
+  "id": "item_0001",
+  "name": "Black and White Gingham Tiered Mini Dress",
+  "category": [
+    "Top",
+    "Bottom"
+  ],
+  "warmth_rating": 2,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/item_0001.jpg"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "item_0001",
+  "name": "Banff National Park Hoodie",
+  "category": [
+    "Top",
+    "Outerwear"
+  ],
+  "warmth_rating": 7,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/banff_hoodie.jpg"
+}

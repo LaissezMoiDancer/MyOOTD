@@ -1,0 +1,12 @@
+{
+  "id": "item_0022",
+  "name": "Blue Denim Jeans",
+  "category": [
+    "Bottom"
+  ],
+  "warmth_rating": 4,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/item_0022.jpg"
+}

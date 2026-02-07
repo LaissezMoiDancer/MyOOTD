@@ -1,0 +1,12 @@
+{
+  "id": "item_0001",
+  "name": "Beige Cargo Pants with Red Emblem",
+  "category": [
+    "Bottom"
+  ],
+  "warmth_rating": 4,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/item_0001.jpg"
+}

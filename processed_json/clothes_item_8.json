@@ -1,0 +1,13 @@
+{
+  "id": "item_0001",
+  "name": "Khaki Trousers with Polka Dot Lining",
+  "category": [
+    "Bottom"
+  ],
+  "warmth_rating": 4,
+  "formality": [
+    "Casual",
+    "Semi-Formal"
+  ],
+  "image_path": "assets/item_0001.jpg"
+}

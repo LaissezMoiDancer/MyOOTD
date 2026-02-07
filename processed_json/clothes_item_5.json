@@ -1,0 +1,12 @@
+{
+  "id": "item_0020",
+  "name": "Flannel Plaid Long Sleeve Shirt",
+  "category": [
+    "Top"
+  ],
+  "warmth_rating": 5,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/item_0020.jpg"
+}
