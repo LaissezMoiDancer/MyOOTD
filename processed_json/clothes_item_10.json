@@ -1,5 +1,5 @@
 {
-  "id": "item_0022",
+  "id": "item_10",
   "name": "Blue Denim Jeans",
   "category": [
     "Bottom"
@@ -8,5 +8,5 @@
   "formality": [
     "Casual"
   ],
-  "image_path": "assets/item_0022.jpg"
+  "image_path": "assets/item_10.jpg"
 }
