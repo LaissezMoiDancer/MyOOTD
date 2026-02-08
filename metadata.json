@@ -1,0 +1,7 @@
+{
+  "name": "MY OOTD",
+  "description": "A high-end AI fashion consultant that analyzes  your wadrobe to provide personalized style advice, color palette analysis, and outfit recommendations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
