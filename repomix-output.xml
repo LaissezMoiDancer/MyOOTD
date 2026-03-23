@@ -1,0 +1,3529 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+app.py
+App.tsx
+assets/clothes_item_1.jpg
+assets/clothes_item_10.jpg
+assets/clothes_item_11.jpg
+assets/clothes_item_12.jpg
+assets/clothes_item_13.jpg
+assets/clothes_item_2.jpg
+assets/clothes_item_3.jpg
+assets/clothes_item_4.jpg
+assets/clothes_item_5.jpg
+assets/clothes_item_6.jpg
+assets/clothes_item_7.jpg
+assets/clothes_item_8.jpg
+assets/clothes_item_9.jpg
+generator.py
+index.html
+index.tsx
+metadata.json
+MyOOTD.html
+outfit_generator.py
+package.json
+project.gitignore
+README.md
+requirements.txt
+services/gemini.ts
+SETUP.md
+start-dev.bat
+start-dev.sh
+tsconfig.json
+types.ts
+vite.config.ts
+website/.gitignore
+website/App.tsx
+website/index.html
+website/index.tsx
+website/metadata.json
+website/package.json
+website/project.gitignore
+website/README.md
+website/services/gemini.ts
+website/tsconfig.json
+website/types.ts
+website/vite.config.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="outfit_generator.py">
+import os
+import json
+import requests
+from google import genai
+from pydantic import BaseModel  
+from typing import List, Optional
+from dotenv import load_dotenv
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+
+class OutfitFeedback(BaseModel):
+    outfit_index: int
+    stylist_note: str
+
+class OutfitSelection(BaseModel):
+    top_outfits: List[OutfitFeedback]
+
+app = FastAPI() #initialize FastAPI app
+
+#setup CORS so frontend to backend communication possible
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+load_dotenv() #load env variable that contains API key
+client = genai.Client(http_options={'api_version': 'v1'})  # will use GEMINI_API_KEY from env
+
+#load jsons of clothing items from github
+processed_json_url = "https://raw.githubusercontent.com/LaissezMoiDancer/MyOOTD/main/processed_json/"
+clothing_items = []
+
+for i in range(1, 14): #looping through the 13 items uploaded to github
+    item_url = f"{processed_json_url}clothes_item_{i}.json"
+    response = requests.get(item_url)
+    response.raise_for_status()
+    clothing_items.append(response.json())
+
+#prepping URL link of clothing for Frontend display of items 
+assets_url = "https://raw.githubusercontent.com/LaissezMoiDancer/MyOOTD/main/assets/"    
+for item in clothing_items:
+    # ensuring the path doesn't double up on 'assets/' if it's already in the JSON
+    clean_path = item["image_path"].replace("assets/", "")
+    item["image_url"] = assets_url + clean_path
+
+
+#default coordinates for Algiers (its temp thats most fitting for current database of items)
+default_lat = 36.73225
+default_long = 3.08746
+
+def location_to_coordinates(location):
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1"
+    response = requests.get(url)
+    data = response.json()
+    if "results" in data and len(data["results"]) > 0:
+        lat = data["results"][0]["latitude"]
+        lon = data["results"][0]["longitude"]
+        return lat, lon
+    else:
+        #they dont sepciify
+        return default_lat, default_long
+
+#get weather from Open-Meteo
+def get_weather(lat, lon):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+    response = requests.get(url)
+    data = response.json()
+    temp = data['current_weather']['temperature']
+    return temp
+
+#associate temp to clothing warmth ranking
+def weather_to_warmth(temp):
+    if temp >= 28:
+        return 1, 2
+    elif temp >= 22:
+        return 2, 3
+    elif temp >= 16:
+        return 3, 4
+    elif temp >= 10:
+        return 4, 5
+    elif temp >= 4:
+        return 6, 8
+    elif temp >= -5:
+        return 8, 9
+    else:
+        return 9, 10
+
+
+#parsing clothing items to get outfits that fit requirements (temp, formality) 
+# REMARK : THIS GIVES A LOT OF OUTFITS THAT MATCH REQUIREMENTS, API WILL PICK 2-3 BEST OUTFIT TO GIVE TO USER
+
+def generating_baseoutfits(clothing_items, temp, formality, preferred_color=None):
+    min_warmth, max_warmth = weather_to_warmth(temp)
+    
+    def has_formality(item, f):
+        fv = item.get("formality")
+        return f in fv if isinstance(fv, (list, tuple)) else fv == f
+
+    #filter by formality
+    formal_items = [i for i in clothing_items if has_formality(i, formality)]
+    
+    #prioritize color if requested (SOFT filter)
+    if preferred_color:
+        color_matches = [i for i in formal_items if preferred_color.lower() in i["name"].lower()]
+        if color_matches:
+            formal_items = color_matches
+
+    #strict categorization (items can only be in one category to avoid nonsensical pairings)
+    tops = []
+    bottoms = []
+    outerwear = []
+    full_items = []
+    
+    for item in formal_items:
+        categories = item.get("category", [])
+        
+        #priority to full items first
+        if "Full" in categories or ("Top" in categories and "Bottom" in categories):
+            full_items.append(item)
+        #then outerwear
+        elif "Outerwear" in categories:
+            outerwear.append(item)
+        #then tops and bottoms
+        elif "Top" in categories:
+            tops.append(item)
+        elif "Bottom" in categories:
+            bottoms.append(item)
+
+    outfits = []
+    seen = set()
+
+    #Full-body items (dresses, jumpsuits)
+    for full_item in full_items:
+        base_warmth = full_item["warmth_rating"]
+        
+        #can be worn alone if meets warmth range
+        if min_warmth <= base_warmth <= max_warmth:
+            outfit_key = (full_item["id"],)
+            if outfit_key not in seen:
+                seen.add(outfit_key)
+                outfits.append({
+                    "items": [full_item],
+                    "total_warmth": base_warmth
+                })
+        
+        #can be paired with outerwear if base warmth is within [min_warmth-3, max_warmth]
+        if (min_warmth - 3) <= base_warmth <= max_warmth:
+            for jacket in outerwear:
+                if jacket["id"] == full_item["id"]:
+                    continue
+                    
+                #calculate outerwear bonus
+                jacket_warmth = jacket["warmth_rating"]
+                if jacket_warmth <= 2:
+                    bonus = 1
+                elif jacket_warmth <= 4:
+                    bonus = 2
+                else:
+                    bonus = 3
+                    
+                total_warmth = base_warmth + bonus
+                
+                #only add if final warmth is in range
+                if min_warmth <= total_warmth <= max_warmth:
+                    outfit_key = (full_item["id"], jacket["id"])
+                    if outfit_key not in seen:
+                        seen.add(outfit_key)
+                        outfits.append({
+                            "items": [full_item, jacket],
+                            "total_warmth": total_warmth
+                        })
+
+    #Top + bottom combinations
+    for top in tops:
+        for bottom in bottoms:
+            if top["id"] == bottom["id"]:
+                continue
+                
+            base_warmth = max(top["warmth_rating"], bottom["warmth_rating"])
+            
+            #can be worn alone if meets warmth range
+            if min_warmth <= base_warmth <= max_warmth:
+                outfit_key = (top["id"], bottom["id"])
+                if outfit_key not in seen:
+                    seen.add(outfit_key)
+                    outfits.append({
+                        "items": [top, bottom],
+                        "total_warmth": base_warmth
+                    })
+            
+            #can be paired with outerwear if base warmth is within [min_warmth-3, max_warmth]
+            if (min_warmth - 3) <= base_warmth <= max_warmth:
+                for jacket in outerwear:
+                    if jacket["id"] in (top["id"], bottom["id"]):
+                        continue
+                        
+                    jacket_warmth = jacket["warmth_rating"]
+                    if jacket_warmth <= 2:
+                        bonus = 1
+                    elif jacket_warmth <= 4:
+                        bonus = 2
+                    else:
+                        bonus = 3
+                    
+                    total_warmth = base_warmth + bonus
+                    
+                    #only add if final warmth is in range
+                    if min_warmth <= total_warmth <= max_warmth:
+                        outfit_key = (top["id"], bottom["id"], jacket["id"])
+                        if outfit_key not in seen:
+                            seen.add(outfit_key)
+                            outfits.append({
+                                "items": [top, bottom, jacket],
+                                "total_warmth": total_warmth
+                            })
+    
+    return outfits
+
+#USING GEMINI AI TO SELECT BEST 3 OUTFITS 
+async def evaluate_outfits(outfits, temp, formality, preferred_color=None):
+    if not outfits: return []
+
+    descriptions = []
+    for i, outfit in enumerate(outfits):
+        names = [item['name'] for item in outfit["items"]]
+        descriptions.append(f"#{i+1}: {', '.join(names)}")
+
+    color_context = f"The user prefers {preferred_color}." if preferred_color else ""
+
+    #clear instructions for 2.5 Flash
+    prompt = f"""
+    ### ROLE
+    You are an elite high-fashion stylist for a luxury concierge service. Your tone is sophisticated, encouraging, and expert.
+
+    ### CONTEXT
+    - Temperature: {temp}°C
+    - Occasion/Formality: {formality}
+    - User Color Preference: {preferred_color if preferred_color else "None (Use your expert judgment)"}
+
+    ### TASK
+    From the list of OUTFITS provided, select the 3 BEST combinations that balance color harmony, appropriate warmth for {temp}°C, and the {formality} dress code.
+
+    ### STYLING RULES
+    1. Color Theory: Prioritize outfits with complementary colors or sophisticated monochromatic looks.
+    2. Weather Logic: At {temp}°C, ensure the layering makes sense (e.g., don't suggest a heavy coat if it's 25°C).
+    3. Note Quality: Your 'stylist_note' must explain *why* the pieces work together. Mention a specific detail like "The silhouette of the {bottoms[0]['name'] if 'bottoms' in locals() else 'bottom'} balances the structured top."
+
+    ### OUTPUT FORMAT
+    Return ONLY a JSON object. No conversation.
+    {{
+      "top_outfits": [
+        {{
+          "outfit_index": 1, 
+          "stylist_note": "A 15-word expert styling tip focusing on texture or color harmony."
+        }}
+      ]
+    }}
+
+    ### OUTFITS TO EVALUATE
+    nl = "\n"
+    {nl.join(descriptions)}
+    """
+    
+    try:
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash", 
+            contents=[prompt]
+        )
+
+        #clean and parse the JSON
+        text_data = response.text.strip()
+        if "```json" in text_data:
+            text_data = text_data.split("```json")[1].split("```")[0].strip()
+        elif "```" in text_data:
+            text_data = text_data.split("```")[1].split("```")[0].strip()
+             
+        data = json.loads(text_data)
+
+        final_recommendations = []
+        for selection in data.get("top_outfits", []):
+            idx = selection["outfit_index"] - 1
+            if 0 <= idx < len(outfits):
+                recommended = outfits[idx].copy()
+                recommended["stylist_note"] = selection["stylist_note"]
+                final_recommendations.append(recommended)
+        
+        return final_recommendations if final_recommendations else outfits[:3]
+
+    except Exception as e:
+        print(f"STYLISH ERROR LOG: {e}") 
+        fallback = outfits[:3]
+        for item in fallback:
+            item["stylist_note"] = "A stylish choice that balances your preferences with the current weather."
+        return fallback
+
+style_cache = {} #cache to store AI recommendations for combos so we save up quotas
+
+#route to get 3 best outfits based on location and formality 
+
+@app.get("/top-outfits")
+async def top_outfits(
+    city: str = Query("Algiers"), 
+    formality: str = Query("Casual"),
+    color: Optional[str] = Query(None) #added color query
+):
+    lat, lon = location_to_coordinates(city) 
+    temp = get_weather(lat, lon)
+    
+    #create a unique key for this specific combo and round the temp to the nearest 5 degrees so the cache is more effective
+    #we include color in the key so different colors get different results
+    cache_key = (round(temp / 5) * 5, formality, color.lower() if color else None)
+
+    if cache_key in style_cache:
+        print("Using cached stylist notes! (Quota saved ✨)")
+        return {
+            "city": city,
+            "temperature": temp,
+            "formality": formality,
+            "preferred_color": color,
+            "top_outfits": style_cache[cache_key]
+        }
+
+    outfits = generating_baseoutfits(clothing_items, temp, formality, color)
+    best_outfits = await evaluate_outfits(outfits, temp, formality, color)
+
+    #store the result for next time
+    style_cache[cache_key] = best_outfits
+
+    return {
+        "city": city,
+        "temperature": temp,
+        "formality": formality,
+        "preferred_color": color,
+        "top_outfits": best_outfits
+    }
+</file>
+
+<file path="project.gitignore">
+node_modules
+dist
+.env
+.DS_Store
+</file>
+
+<file path="requirements.txt">
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.1
+beautifulsoup4==4.14.3
+certifi==2026.1.4
+cffi==2.0.0
+charset-normalizer==3.4.4
+click==8.3.1
+cryptography==46.0.4
+distro==1.9.0
+fastapi==0.128.4
+google==3.0.0
+google-ai-generativelanguage==0.6.15
+google-api-core==2.25.2
+google-api-python-client==2.189.0
+google-auth==2.49.0.dev0
+google-auth-httplib2==0.3.0
+google-genai==1.62.0
+google-generativeai==0.8.6
+googleapis-common-protos==1.72.0
+grpcio==1.78.0
+grpcio-status==1.71.2
+h11==0.16.0
+httpcore==1.0.9
+httplib2==0.31.2
+httpx==0.28.1
+idna==3.11
+proto-plus==1.27.1
+protobuf==5.29.6
+pyasn1==0.6.2
+pyasn1_modules==0.4.2
+pycparser==3.0
+pydantic==2.12.5
+pydantic_core==2.41.5
+pyparsing==3.3.2
+python-dotenv==1.2.1
+requests==2.32.5
+sniffio==1.3.1
+soupsieve==2.8.3
+starlette==0.52.1
+tenacity==9.1.4
+tqdm==4.67.3
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+uritemplate==4.2.0
+urllib3==2.6.3
+uvicorn==0.40.0
+websockets==15.0.1
+</file>
+
+<file path="SETUP.md">
+# MyOOTD Setup Guide
+
+This guide will help you get your AI Fashion Stylist website up and running.
+
+## Project Overview
+
+This is a full-stack application with:
+- **Frontend**: React + TypeScript + Vite (runs on port 3000)
+- **Backend**: Python FastAPI (runs on port 8000)
+- **AI**: Google Gemini API for style analysis and recommendations
+
+## Prerequisites
+
+1. **Node.js** (v18 or higher) - [Download here](https://nodejs.org/)
+2. **Python** (3.10 or higher) - [Download here](https://www.python.org/downloads/)
+3. **Google Gemini API Key** - Get one from [Google AI Studio](https://aistudio.google.com/)
+
+## Step-by-Step Setup
+
+### 1. Install Frontend Dependencies
+
+```bash
+npm install
+```
+
+### 2. Set Up Environment Variables
+
+Create or update `.env.local` in the root directory:
+
+```env
+GEMINI_API_KEY=your_actual_api_key_here
+VITE_GEMINI_API_KEY=your_actual_api_key_here
+```
+
+**Important**: Replace `your_actual_api_key_here` with your actual Google Gemini API key.
+
+### 3. Set Up Python Backend
+
+#### 3.1 Create a Virtual Environment (Recommended)
+
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Mac/Linux
+python -m venv venv
+source venv/bin/activate
+```
+
+#### 3.2 Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+#### 3.3 Set Up Backend Environment Variables
+
+Create a `.env` file in the root directory (for the Python backend):
+
+```env
+GEMINI_API_KEY=your_actual_api_key_here
+```
+
+### 4. Start the Backend Server
+
+In one terminal window, start the Python FastAPI server:
+
+```bash
+# Make sure your virtual environment is activated
+uvicorn outfit_generator:app --reload --port 8000
+```
+
+You should see output like:
+```
+INFO:     Uvicorn running on http://127.0.0.1:8000
+```
+
+### 5. Start the Frontend Development Server
+
+In another terminal window, start the Vite dev server:
+
+```bash
+npm run dev
+```
+
+You should see output like:
+```
+  VITE v6.x.x  ready in xxx ms
+
+  ➜  Local:   http://localhost:3000/
+```
+
+### 6. Access the Website
+
+Open your browser and navigate to:
+```
+http://localhost:3000
+```
+
+## Troubleshooting
+
+### Backend Not Connecting
+
+- **Check if backend is running**: Make sure the Python server is running on port 8000
+- **Check CORS**: The backend has CORS enabled for all origins, so this shouldn't be an issue
+- **Check API endpoint**: Verify `http://127.0.0.1:8000/top-outfits` is accessible
+
+### API Key Issues
+
+- **Frontend**: Make sure `.env.local` has `GEMINI_API_KEY` or `VITE_GEMINI_API_KEY`
+- **Backend**: Make sure `.env` has `GEMINI_API_KEY`
+- **Verify key**: Test your API key at [Google AI Studio](https://aistudio.google.com/)
+
+### Port Already in Use
+
+- **Frontend (3000)**: Change port in `vite.config.ts` or kill the process using port 3000
+- **Backend (8000)**: Change port in the uvicorn command or kill the process using port 8000
+
+### Module Not Found Errors
+
+- **Frontend**: Run `npm install` again
+- **Backend**: Make sure virtual environment is activated and run `pip install -r requirements.txt`
+
+## Project Structure
+
+```
+MyOOTD/
+├── App.tsx              # Main React component
+├── index.tsx            # React entry point
+├── services/
+│   └── gemini.ts        # Gemini API service functions
+├── outfit_generator.py  # Python FastAPI backend
+├── package.json         # Frontend dependencies
+├── requirements.txt     # Python dependencies
+├── vite.config.ts       # Vite configuration
+└── .env.local           # Frontend environment variables
+```
+
+## Features
+
+- **Weather Integration**: Uses Google Search to get real-time weather
+- **Style Analysis**: Analyzes clothing images using Gemini Vision
+- **Outfit Recommendations**: Gets AI-curated outfit suggestions from your wardrobe
+- **Wardrobe Management**: Upload and manage your clothing items
+
+## Development Commands
+
+```bash
+# Frontend
+npm run dev      # Start dev server
+npm run build    # Build for production
+npm run preview  # Preview production build
+
+# Backend
+uvicorn outfit_generator:app --reload --port 8000
+```
+
+## Next Steps
+
+1. Get your Google Gemini API key from [Google AI Studio](https://aistudio.google.com/)
+2. Add it to both `.env.local` (frontend) and `.env` (backend)
+3. Start both servers
+4. Open http://localhost:3000 in your browser
+5. Upload some clothing items to your wardrobe
+6. Start getting style recommendations!
+</file>
+
+<file path="start-dev.bat">
+@echo off
+echo Starting MyOOTD Development Servers...
+echo.
+
+echo [1/2] Starting Python Backend Server...
+start "MyOOTD Backend" cmd /k "python -m venv venv && venv\Scripts\activate && pip install -r requirements.txt && uvicorn outfit_generator:app --reload --port 8000"
+
+timeout /t 3 /nobreak >nul
+
+echo [2/2] Starting Frontend Development Server...
+start "MyOOTD Frontend" cmd /k "npm install && npm run dev"
+
+echo.
+echo Both servers are starting...
+echo Backend: http://127.0.0.1:8000
+echo Frontend: http://localhost:3000
+echo.
+echo Press any key to exit this window (servers will continue running)...
+pause >nul
+</file>
+
+<file path="start-dev.sh">
+#!/bin/bash
+
+echo "Starting MyOOTD Development Servers..."
+echo ""
+
+# Check if virtual environment exists, create if not
+if [ ! -d "venv" ]; then
+    echo "[Setup] Creating Python virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment
+echo "[Setup] Activating virtual environment..."
+source venv/bin/activate
+
+# Install Python dependencies if needed
+if [ ! -f "venv/.installed" ]; then
+    echo "[Setup] Installing Python dependencies..."
+    pip install -r requirements.txt
+    touch venv/.installed
+fi
+
+# Start backend in background
+echo "[1/2] Starting Python Backend Server..."
+uvicorn outfit_generator:app --reload --port 8000 &
+BACKEND_PID=$!
+
+# Wait a moment for backend to start
+sleep 3
+
+# Check if npm dependencies are installed
+if [ ! -d "node_modules" ]; then
+    echo "[Setup] Installing Node.js dependencies..."
+    npm install
+fi
+
+# Start frontend
+echo "[2/2] Starting Frontend Development Server..."
+echo ""
+echo "=========================================="
+echo "Backend: http://127.0.0.1:8000"
+echo "Frontend: http://localhost:3000"
+echo "=========================================="
+echo ""
+echo "Press Ctrl+C to stop both servers"
+
+# Trap Ctrl+C to kill both processes
+trap "kill $BACKEND_PID 2>/dev/null; exit" INT TERM
+
+npm run dev
+
+# Cleanup on exit
+kill $BACKEND_PID 2>/dev/null
+</file>
+
+<file path="website/.gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+</file>
+
+<file path="website/App.tsx">
+import React, { useState, useCallback, useEffect } from 'react';
+import { 
+  Upload, 
+  Sparkles, 
+  ChevronRight, 
+  RotateCcw, 
+  Palette, 
+  Info,
+  Maximize2,
+  Heart, 
+  Share2,
+  MapPin,
+  Briefcase,
+  Check,
+  ArrowLeft,
+  Shirt,
+  Search,
+  Cloud,
+  Sun,
+  CloudRain,
+  Snowflake,
+  Wind,
+  Plus,
+  Trash2,
+  ExternalLink,
+  Loader2
+} from 'lucide-react';
+import { fetchWeather, analyzeStyle, getOutfitRecommendations } from './services/gemini';
+import { AppStep, UserPhoto, StyleAnalysis, OutfitRecommendation, StylePreferences } from './types';
+
+const STANDARD_COLORS = [
+  { name: 'Noir', hex: '#000000' },
+  { name: 'Albâtre', hex: '#FFFFFF' },
+  { name: 'Marine', hex: '#000080' },
+  { name: 'Ardoise', hex: '#4A4E52' },
+  { name: 'Gris Perle', hex: '#D3D3D3' },
+  { name: 'Beige', hex: '#F5F5DC' },
+  { name: 'Chameau', hex: '#C19A6B' },
+  { name: 'Olive', hex: '#556B2F' },
+  { name: 'Bordeaux', hex: '#800020' },
+];
+
+const SEASON_THEMES = {
+  spring: { light: '#f0fdf4', middle: '#dcfce7', dark: '#bbf7d0' },
+  summer: { light: '#fffbeb', middle: '#fef3c7', dark: '#fde68a' },
+  autumn: { light: '#fff7ed', middle: '#ffedd5', dark: '#fed7aa' },
+  winter: { light: '#f0f9ff', middle: '#e0f2fe', dark: '#bae6fd' },
+};
+
+const STEPS: AppStep[] = ['location', 'occasion', 'closet', 'analyzing', 'result', 'wardrobe'];
+
+const SeasonalParticles: React.FC<{ season: 'spring' | 'summer' | 'autumn' | 'winter' | null, currentStep: AppStep }> = ({ season, currentStep }) => {
+  // Allow animations on steps once season is detected. Block only on wardrobe view.
+  if (!season || currentStep === 'wardrobe') return null;
+
+  const particles = Array.from({ length: 30 }); // Increased particle count for better visibility
+
+  return (
+    <div className="fixed inset-0 pointer-events-none z-[1] overflow-hidden opacity-70 select-none">
+      <style>{`
+        @keyframes seasonal-drift {
+          0% { transform: translateX(-10vw) translateY(0) rotate(0deg); opacity: 0; }
+          20% { opacity: 0.9; }
+          80% { opacity: 0.9; }
+          100% { transform: translateX(110vw) translateY(15vh) rotate(360deg); opacity: 0; }
+        }
+        @keyframes seasonal-float-up {
+          0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 0; }
+          20% { opacity: 1; }
+          80% { opacity: 1; }
+          100% { transform: translateY(-130vh) translateX(80px) rotate(180deg); opacity: 0; }
+        }
+        @keyframes seasonal-sway-fall {
+          0% { transform: translateY(-10vh) translateX(0) rotate(0deg); opacity: 0; }
+          20% { opacity: 1; }
+          50% { transform: translateY(50vh) translateX(70px) rotate(180deg); }
+          80% { opacity: 1; }
+          100% { transform: translateY(110vh) translateX(-40px) rotate(360deg); opacity: 0; }
+        }
+        @keyframes seasonal-snow-pure {
+          0% { transform: translateY(-10vh) translateX(0); opacity: 0; }
+          20% { opacity: 1; }
+          100% { transform: translateY(110vh) translateX(20px); opacity: 0; }
+        }
+        .particle { position: absolute; pointer-events: none; text-shadow: 0 0 10px rgba(255,255,255,0.5); }
+      `}</style>
+      {particles.map((_, i) => {
+        const left = `${Math.random() * 100}%`;
+        const delay = `${i * 0.8}s`;
+        const duration = `${10 + Math.random() * 12}s`;
+        const size = `${24 + Math.random() * 20}px`;
+
+        let icon = '';
+        let animation = '';
+
+        switch(season) {
+          case 'spring':
+            icon = '🍃';
+            animation = `seasonal-drift ${duration} infinite linear`;
+            break;
+          case 'summer':
+            icon = '🌸';
+            animation = `seasonal-float-up ${duration} infinite ease-out`;
+            break;
+          case 'autumn':
+            icon = '🍂';
+            animation = `seasonal-sway-fall ${duration} infinite linear`;
+            break;
+          case 'winter':
+            icon = '❄️';
+            animation = `seasonal-snow-pure ${duration} infinite linear`;
+            break;
+        }
+
+        return (
+          <span 
+            key={`${season}-${i}`} 
+            className="particle" 
+            style={{ 
+              left, 
+              fontSize: size,
+              animation, 
+              animationDelay: delay,
+              top: season === 'summer' ? 'auto' : '-10%',
+              bottom: season === 'summer' ? '-10%' : 'auto'
+            }}
+          >
+            {icon}
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
+const WeatherAnimation: React.FC<{ type: string }> = ({ type }) => {
+  const baseClass = "w-32 h-32 flex items-center justify-center relative mx-auto";
+  
+  switch (type) {
+    case 'sunny':
+      return (
+        <div className={baseClass}>
+          <div className="absolute inset-0 bg-yellow-100 rounded-full blur-3xl opacity-20 animate-pulse"></div>
+          <Sun className="w-20 h-20 text-yellow-400 animate-[spin_10s_linear_infinite]" />
+        </div>
+      );
+    case 'raining':
+      return (
+        <div className={baseClass}>
+          <CloudRain className="w-20 h-20 text-blue-400" />
+          <div className="absolute flex space-x-4 pt-12">
+            <div className="w-0.5 h-6 bg-blue-300 animate-bounce delay-75"></div>
+            <div className="w-0.5 h-8 bg-blue-300 animate-bounce delay-150"></div>
+          </div>
+        </div>
+      );
+    case 'snowy':
+      return (
+        <div className={baseClass}>
+          <Snowflake className="w-20 h-20 text-slate-300 animate-pulse" />
+        </div>
+      );
+    case 'windy':
+      return (
+        <div className={baseClass}>
+          <Wind className="w-20 h-20 text-stone-300 animate-pulse" />
+        </div>
+      );
+    case 'cloudy':
+    default:
+      return (
+        <div className={baseClass}>
+          <Cloud className="w-20 h-20 text-stone-400 animate-pulse" />
+        </div>
+      );
+  }
+};
+
+const Header: React.FC<{ currentStep: AppStep, onLogoClick?: () => void, onClosetClick?: () => void }> = ({ currentStep, onLogoClick, onClosetClick }) => {
+  const stepIndex = STEPS.indexOf(currentStep);
+  const progress = ((stepIndex + 1) / STEPS.length) * 100;
+
+  return (
+    <header className="fixed top-0 left-0 right-0 z-50">
+      <div className="bg-white/80 backdrop-blur-xl border-b border-stone-100">
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="flex items-center space-x-3 cursor-pointer group" onClick={onLogoClick}>
+            <div className="w-10 h-10 bg-stone-950 rounded-xl flex items-center justify-center rotate-3 shadow-lg shadow-stone-200 group-hover:rotate-0 transition-transform">
+              <span className="text-white text-lg font-serif font-bold italic">M</span>
+            </div>
+            <div>
+              <h1 className="font-serif text-2xl font-black tracking-tighter text-stone-900 leading-none uppercase">MYOOTD</h1>
+              <p className="text-[10px] font-bold tracking-[0.2em] text-stone-400 uppercase">AI Couture Studio</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-6">
+            <nav className="hidden md:flex items-center space-x-8">
+              {['Location', 'Occasion', 'Wardrobe', 'Review'].map((s, i) => (
+                <div key={s} className="flex items-center space-x-2">
+                  <span className={`text-[9px] font-black uppercase tracking-widest ${i <= stepIndex ? 'text-stone-900' : 'text-stone-300'}`}>
+                    {s}
+                  </span>
+                  {i < 3 && <div className={`w-1 h-1 rounded-full ${i < stepIndex ? 'bg-stone-900' : 'bg-stone-200'}`} />}
+                </div>
+              ))}
+            </nav>
+            <button 
+              onClick={onClosetClick}
+              className="bg-stone-950 text-white px-6 py-2.5 rounded-full text-xs font-bold uppercase tracking-wider hover:bg-stone-800 transition-all active:scale-95 flex items-center space-x-2"
+            >
+              <Shirt className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">My Wardrobe</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="w-full h-0.5 bg-stone-50">
+        <div 
+          className="h-full bg-stone-950 transition-all duration-1000 ease-out"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </header>
+  );
+};
+
+const WardrobeView: React.FC<{ 
+  items: UserPhoto[], 
+  onAddItem: (item: UserPhoto) => void,
+  onDeleteItem: (id: string) => void,
+  onSelectItem?: (item: UserPhoto) => void 
+}> = ({ items, onAddItem, onDeleteItem, onSelectItem }) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        onAddItem({
+          id: Math.random().toString(36).substr(2, 9),
+          url: reader.result as string,
+          base64: (reader.result as string).split(',')[1],
+          mimeType: file.type
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto py-10 space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-stone-200 pb-12">
+        <div className="space-y-4">
+          <h2 className="text-6xl font-serif text-stone-900 tracking-tighter leading-none">My Wardrobe</h2>
+          <p className="text-stone-400 text-sm font-light max-w-md">Your curated digital wardrobe, ready for AI synthesis and style exploration.</p>
+        </div>
+        <div className="relative group">
+          <button className="bg-stone-950 text-white px-10 py-5 rounded-2xl text-[10px] font-bold uppercase tracking-widest shadow-2xl hover:bg-stone-800 transition-all flex items-center space-x-3">
+            <Plus className="w-4 h-4" />
+            <span>Import Collection</span>
+          </button>
+          <input 
+            type="file" 
+            accept="image/*" 
+            onChange={handleFileChange} 
+            className="absolute inset-0 opacity-0 cursor-pointer" 
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-8">
+        {items.map((item) => (
+          <div key={item.id} className="group relative aspect-[3/4] bg-white rounded-3xl overflow-hidden border border-stone-100 shadow-sm hover:shadow-2xl transition-all duration-700">
+            <img src={item.url} className="w-full h-full object-contain p-6 group-hover:scale-105 transition-transform duration-700" alt="Closet Item" />
+            <div className="absolute inset-0 bg-stone-950/0 group-hover:bg-stone-950/60 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100 space-x-3 backdrop-blur-[2px]">
+              {onSelectItem && (
+                <button 
+                  onClick={() => onSelectItem(item)}
+                  className="p-4 bg-white text-stone-950 rounded-full hover:scale-110 transition-transform shadow-lg"
+                  title="Style this item"
+                >
+                  <Sparkles className="w-5 h-5" />
+                </button>
+              )}
+              <button 
+                onClick={() => onDeleteItem(item.id!)}
+                className="p-4 bg-rose-500 text-white rounded-full hover:scale-110 transition-transform shadow-lg"
+                title="Delete item"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        ))}
+        {items.length === 0 && (
+          <div className="col-span-full py-32 text-center border-2 border-dashed border-stone-200 rounded-[4rem] space-y-6">
+            <div className="w-20 h-20 bg-stone-50 rounded-full flex items-center justify-center mx-auto">
+              <Shirt className="w-8 h-8 text-stone-200" />
+            </div>
+            <div className="space-y-2">
+              <p className="text-stone-900 font-serif text-xl">Wardrobe is empty</p>
+              <p className="text-stone-400 text-xs uppercase tracking-widest">Start uploading to begin your styling journey</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const StepLocation: React.FC<{ 
+  onNext: (loc: string, weather: any) => void 
+}> = ({ onNext }) => {
+  const [location, setLocation] = useState('');
+  const [weather, setWeather] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const checkWeather = async () => {
+    if (!location) return;
+    setLoading(true);
+    try {
+      const w = await fetchWeather(location);
+      setWeather(w);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto py-10 space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-1000 relative z-10">
+      <div className="space-y-6">
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-stone-100 rounded-full text-stone-500">
+          <MapPin className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.25em]">Phase 01: Weather</span>
+        </div>
+        <h2 className="text-8xl font-serif text-stone-900 leading-[0.85] tracking-tighter">
+          Select your <br /> <span className="italic font-normal text-stone-400">Atmosphere</span>
+        </h2>
+        <p className="text-stone-500 text-xl font-light leading-relaxed max-w-2xl">
+          Our AI synchronizes with global weather patterns to ensure your aesthetic is as functional as it is refined.
+        </p>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-12 items-start -mt-4">
+        <div className="flex flex-col pt-24">
+          <div className="relative group w-full">
+            <input 
+              type="text" 
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && checkWeather()}
+              placeholder="Search city"
+              className="w-full bg-white border border-stone-200 rounded-[2.5rem] py-10 px-12 text-2xl text-stone-900 focus:ring-4 focus:ring-stone-950/5 outline-none shadow-xl transition-all font-serif italic"
+            />
+            <button 
+              onClick={checkWeather}
+              disabled={!location || loading}
+              className="absolute right-5 top-5 bottom-5 px-10 bg-stone-950 text-white rounded-[1.8rem] font-bold uppercase tracking-widest text-[11px] hover:bg-stone-800 transition-all flex items-center space-x-3 disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              <span>{loading ? 'Synthesizing' : 'SYNC WEATHER'}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-16 px-10 pt-12">
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3L5 21H19L17 3H7Z"/><path d="M12 3V21"/><path d="M7 8H17"/></svg>
+               <span className="text-[11px] font-black uppercase tracking-[0.4em] text-stone-500">Jeans</span>
+            </div>
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3L3 9V21H21V9L18 3H6Z"/><path d="M3 9H21"/><path d="M9 3V9"/><path d="M15 3V9"/></svg>
+               <span className="text-[11px] font-black uppercase tracking-[0.4em] text-stone-500">Dress</span>
+            </div>
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <Shirt className="w-16 h-16" strokeWidth={1.2} />
+               <span className="text-[11px] font-black uppercase tracking-[0.4em] text-stone-500">Shirt</span>
+            </div>
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 3H20V21H4V3Z"/><path d="M4 8H20"/><path d="M10 8V21"/><path d="M14 8V21"/><path d="M20 3L22 8V21"/><path d="M4 3L2 8V21"/></svg>
+               <span className="text-[11px] font-black uppercase tracking-[0.4em] text-stone-500">Jacket</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center justify-center p-12 bg-white rounded-[4rem] border border-stone-100 min-h-[400px] shadow-2xl relative overflow-hidden group w-full">
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-stone-950/10 to-transparent" />
+          {weather ? (
+            <div className="text-center animate-in zoom-in duration-1000 flex flex-col items-center justify-center h-full space-y-8">
+              <WeatherAnimation type={weather.type} />
+              <div className="space-y-4">
+                <p className="text-[11px] font-black uppercase tracking-[0.4em] text-stone-400">WEATHER SYNC SUCCESS</p>
+                <div className="flex items-center justify-center space-x-6">
+                  <h3 className="text-6xl font-serif text-stone-900 tracking-tighter">{weather.context}</h3>
+                  <button 
+                    onClick={() => onNext(location, weather)}
+                    className="group bg-stone-950 text-white w-14 h-14 rounded-full flex items-center justify-center shadow-xl hover:scale-110 transition-all active:scale-95"
+                  >
+                    <ChevronRight className="w-6 h-6" />
+                  </button>
+                </div>
+                {weather.sources && (
+                  <div className="flex flex-wrap justify-center gap-4 mt-2">
+                    {weather.sources.map((chunk: any, i: number) => (
+                      chunk.web && (
+                        <a key={i} href={chunk.web.uri} target="_blank" rel="noopener noreferrer" className="inline-flex items-center space-x-1 text-[9px] uppercase font-bold text-stone-400 hover:text-stone-950 transition-colors">
+                          <ExternalLink className="w-2.5 h-2.5" />
+                          <span>SOURCE {i+1}</span>
+                        </a>
+                      )
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center space-y-6 opacity-20 group-hover:opacity-40 transition-opacity">
+              <div className="relative">
+                <Cloud className="w-32 h-32 mx-auto" />
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-stone-400 rounded-full animate-ping" />
+              </div>
+              <p className="text-xs font-black uppercase tracking-[0.5em]">AWAITING GEO-COORDINATION</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const StepOccasion: React.FC<{ 
+  onBack: () => void, 
+  onNext: (occ: 'Casual' | 'Formal' | 'Semi-formal') => void 
+}> = ({ onBack, onNext }) => {
+  const [occ, setOcc] = useState<'Casual' | 'Formal' | 'Semi-formal' | ''>('');
+
+  const occasions = [
+    { name: 'Casual', icon: <Shirt className="w-6 h-6" />, desc: 'Relaxed daily elegance' },
+    { name: 'Formal', icon: <Maximize2 className="w-6 h-6" />, desc: 'Structured sophistication' },
+    { name: 'Semi-formal', icon: <Briefcase className="w-6 h-6" />, desc: 'Modern professional edge' }
+  ];
+
+  return (
+    <div className="max-w-5xl mx-auto py-10 space-y-16 animate-in fade-in slide-in-from-right-10 duration-1000 relative z-10">
+      <div className="space-y-6 text-center">
+        <button onClick={onBack} className="flex items-center space-x-3 text-stone-400 mx-auto hover:text-stone-950 transition-colors mb-6">
+          <ArrowLeft className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest">Back to Weather</span>
+        </button>
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-stone-100 rounded-full text-stone-500">
+          <Sparkles className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.25em]">Phase 02: Narrative</span>
+        </div>
+        <h2 className="text-8xl font-serif text-stone-900 leading-[0.85] tracking-tighter">
+          Define the <br /> <span className="italic font-normal text-stone-400">Occasion</span>
+        </h2>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-8">
+        {occasions.map((item) => (
+          <button
+            key={item.name}
+            onClick={() => setOcc(item.name as any)}
+            className={`group p-12 rounded-[3.5rem] border text-left transition-all relative overflow-hidden h-64 flex flex-col justify-end bg-white border-stone-100 text-stone-900 hover:border-stone-950/20 shadow-sm ${
+              occ === item.name ? 'ring-4 ring-stone-950 ring-offset-4 scale-[1.02]' : ''
+            }`}
+          >
+            <div className={`absolute top-10 left-10 w-16 h-16 rounded-2xl flex items-center justify-center transition-all ${occ === item.name ? 'bg-stone-950 text-white rotate-12' : 'bg-stone-50 text-stone-400'}`}>
+              {item.icon}
+            </div>
+            <div className="space-y-2">
+               <span className="text-3xl font-serif leading-none">{item.name}</span>
+               <p className={`text-[10px] uppercase font-bold tracking-widest text-stone-300`}>{item.desc}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="flex justify-center pt-10">
+        <button 
+          onClick={() => onNext(occ as any)}
+          disabled={!occ}
+          className={`px-20 py-8 rounded-[2.5rem] text-[11px] font-black uppercase tracking-[0.4em] shadow-2xl transition-all flex items-center space-x-6 ${
+            occ ? 'bg-stone-950 text-white hover:bg-stone-800 hover:scale-105' : 'bg-stone-100 text-stone-300 cursor-not-allowed shadow-none'
+          }`}
+        >
+          <span>Open the Closet</span>
+          <ChevronRight className="w-5 h-5" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const StepCloset: React.FC<{ 
+  wardrobe: UserPhoto[],
+  onBack: () => void, 
+  onNext: (photo: UserPhoto | null, color: string) => void 
+}> = ({ wardrobe, onBack, onNext }) => {
+  const [color, setColor] = useState(STANDARD_COLORS[0].hex);
+
+  const handleSubmit = () => {
+    onNext(null, color);
+  };
+
+  const canSynthesize = wardrobe.length > 0;
+
+  return (
+    <div className="max-w-4xl mx-auto py-10 space-y-16 animate-in fade-in slide-in-from-right-10 duration-1000 relative z-10">
+      <div className="space-y-6 text-center">
+        <button onClick={onBack} className="flex items-center space-x-3 text-stone-400 mx-auto hover:text-stone-950 transition-colors mb-6">
+          <ArrowLeft className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest">BACK TO NARRATIVE</span>
+        </button>
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-stone-100 rounded-full text-stone-500">
+          <Sparkles className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.25em]">Phase 03: Preference</span>
+        </div>
+        <h2 className="text-8xl font-serif text-stone-900 leading-[0.85] tracking-tighter">
+          Select your <br /> <span className="italic font-normal text-stone-400">Foundation</span>
+        </h2>
+      </div>
+
+      <div className="max-w-xl mx-auto space-y-10">
+         <div className="bg-white p-12 rounded-[3.5rem] border border-stone-100 space-y-8 shadow-sm">
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] text-stone-400 text-center block uppercase">Accent Palette Target</label>
+            <div className="grid grid-cols-3 gap-6">
+              {STANDARD_COLORS.map((c) => (
+                <button
+                  key={c.hex}
+                  onClick={() => setColor(c.hex)}
+                  className={`aspect-square rounded-2xl border-4 transition-all flex items-center justify-center shadow-sm ${
+                    color === c.hex ? 'border-stone-950 scale-110 shadow-xl' : 'border-transparent'
+                  }`}
+                  style={{ backgroundColor: c.hex }}
+                >
+                  {color === c.hex && <Check className={`w-5 h-5 ${c.hex === '#FFFFFF' || c.hex === '#D3D3D3' || c.hex === '#F5F5DC' ? 'text-stone-900' : 'text-white'}`} />}
+                </button>
+              ))}
+            </div>
+         </div>
+
+         <button 
+          onClick={handleSubmit}
+          disabled={!canSynthesize}
+          className={`w-full py-10 rounded-[2.5rem] text-[11px] font-black uppercase tracking-[0.4em] shadow-2xl transition-all flex items-center justify-center space-x-6 ${
+            canSynthesize ? 'bg-stone-950 text-white hover:bg-stone-800 hover:scale-105' : 'bg-stone-100 text-stone-300 cursor-not-allowed shadow-none'
+          }`}
+        >
+          <span>BEGIN STYLE SYNTHESIS</span>
+          <ChevronRight className="w-6 h-6" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const AnalysisLoader: React.FC = () => {
+  const [msgIndex, setMsgIndex] = useState(0);
+  const messages = [
+    "Analyzing garment structure...",
+    "Sampling texture & weave...",
+    "Consulting digital trend archives...",
+    "Matching seasonal color palettes...",
+    "Optimizing for regional climate...",
+    "Synthesizing the final lookbook..."
+  ];
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setMsgIndex((prev) => (prev + 1) % messages.length);
+    }, 2500);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[70vh] space-y-16 animate-in fade-in duration-1000 relative z-10">
+      <div className="relative">
+        <div className="w-56 h-56 border-[2px] border-stone-100 rounded-full animate-[spin_8s_linear_infinite] border-t-stone-950"></div>
+        <div className="w-48 h-48 border-[2px] border-stone-100 rounded-full animate-[spin_12s_linear_infinite_reverse] border-b-stone-950 absolute top-4 left-4"></div>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+          <Sparkles className="w-16 h-16 text-stone-950 animate-pulse" />
+        </div>
+      </div>
+      <div className="text-center space-y-6">
+        <h3 className="text-5xl font-serif text-stone-900 tracking-tighter italic">Fashion Synthesis in Progress</h3>
+        <div className="h-8 flex items-center justify-center overflow-hidden">
+          <p key={msgIndex} className="text-stone-400 text-xs font-black uppercase tracking-[0.5em] animate-in slide-in-from-bottom-4 duration-700">
+            {messages[msgIndex]}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ResultView: React.FC<{ 
+  photo: UserPhoto, 
+  analysis: StyleAnalysis, 
+  recommendations: OutfitRecommendation[],
+  prefs: StylePreferences,
+  onReset: () => void 
+}> = ({ photo, analysis, recommendations, prefs, onReset }) => {
+  return (
+    <div className="space-y-24 animate-in fade-in slide-in-from-right-10 duration-1000 pb-32 relative z-10">
+      <div className="flex flex-col md:flex-row items-end justify-between gap-10 pb-12 border-b border-stone-200">
+        <div className="space-y-6">
+          <button onClick={onReset} className="flex items-center space-x-3 text-stone-400 hover:text-stone-950 transition-colors text-[10px] font-black uppercase tracking-widest group">
+            <RotateCcw className="w-3.5 h-3.5 group-hover:-rotate-180 transition-transform duration-500" />
+            <span>New Consultation</span>
+          </button>
+          <h2 className="text-8xl font-serif text-stone-900 tracking-tighter leading-none">The <span className="italic font-normal text-stone-400">Lookbook</span></h2>
+        </div>
+        <div className="flex items-center gap-6">
+          <div className="text-right hidden sm:block">
+            <p className="text-[10px] font-black uppercase tracking-widest text-stone-300">Generated for</p>
+            <p className="text-xl font-serif">{prefs.location} • {prefs.occasion}</p>
+          </div>
+          <button className="bg-stone-950 text-white px-10 py-5 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-2xl hover:bg-stone-800 transition-all active:scale-95">
+            Export Synthesis
+          </button>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-12 gap-20">
+        <div className="lg:col-span-4 space-y-16">
+          <div className="relative aspect-[3/4] rounded-[3.5rem] overflow-hidden shadow-2xl group border-[12px] border-white bg-white">
+            <img src={photo.url} alt="Wardrobe Piece" className="w-full h-full object-contain p-4 group-hover:scale-110 transition-transform duration-1000" />
+            <div className="absolute bottom-6 left-6 right-6 p-6 bg-white/90 backdrop-blur-md rounded-3xl border border-stone-100 shadow-xl">
+               <p className="text-[9px] font-black uppercase tracking-widest text-stone-400 mb-1">Focal Item</p>
+               <h4 className="text-xl font-serif">Original Curation</h4>
+            </div>
+          </div>
+
+          <div className="space-y-10">
+            <div className="p-12 bg-white rounded-[3.5rem] border border-stone-100 shadow-sm space-y-8">
+              <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-stone-400">Technical Spec</h4>
+              <div className="space-y-8">
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-stone-300 mb-1">Body Type Synergy</span>
+                  <span className="text-lg font-serif">{analysis.bodyType}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-stone-300 mb-1">Skin Tone Match</span>
+                  <span className="text-lg font-serif">{analysis.skinTone}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-stone-300 mb-1">Environmental Context</span>
+                  <span className="text-lg font-serif">{analysis.weatherContext}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-12 bg-stone-950 rounded-[3.5rem] text-white space-y-8 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
+              <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">The Color Story</h4>
+              <div className="grid grid-cols-5 gap-3">
+                {analysis.recommendedColors.map((color, i) => (
+                  <div key={i} className="group relative aspect-[1/2]">
+                    <div className="w-full h-full rounded-2xl border border-white/20 transition-transform group-hover:scale-110 duration-500" style={{ backgroundColor: color }} />
+                    <span className="absolute -bottom-6 left-0 right-0 text-[8px] font-mono text-center text-white/30 group-hover:text-white transition-colors">{color}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-8 space-y-20">
+          <div className="space-y-12">
+            <h3 className="text-xs font-black uppercase tracking-[0.5em] text-stone-300">Style Ensembles</h3>
+            <div className="grid gap-12">
+              {recommendations.map((rec, idx) => (
+                <div key={idx} className="group bg-white rounded-[4rem] overflow-hidden border border-stone-100 flex flex-col md:flex-row shadow-sm hover:shadow-2xl transition-all duration-1000">
+                  <div className="md:w-5/12 relative overflow-hidden aspect-[4/5]">
+                    <img src={rec.imageUrl} alt={rec.title} className="w-full h-full object-cover transition-transform duration-[4s] group-hover:scale-110" />
+                    <div className="absolute top-8 left-8 p-3 bg-white/90 backdrop-blur-md rounded-2xl shadow-xl">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-stone-900">Concept 0{idx+1}</p>
+                    </div>
+                  </div>
+                  <div className="md:w-7/12 p-16 flex flex-col justify-center bg-white">
+                    <div className="space-y-8">
+                      <h4 className="text-5xl font-serif text-stone-950 tracking-tighter">{rec.title}</h4>
+                      <p className="text-stone-500 font-light leading-relaxed text-lg italic">"{rec.description}"</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function App() {
+  const [step, setStep] = useState<AppStep>('location');
+  const [prefs, setPrefs] = useState<StylePreferences>({ location: '', occasion: 'Casual', preferredColor: '#000000' });
+  const [weatherInfo, setWeatherInfo] = useState<any>(null);
+  const [photo, setPhoto] = useState<UserPhoto | null>(null);
+  const [wardrobe, setWardrobe] = useState<UserPhoto[]>([]);
+  const [analysis, setAnalysis] = useState<StyleAnalysis | null>(null);
+  const [recommendations, setRecommendations] = useState<OutfitRecommendation[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('myootd_wardrobe');
+    if (saved) {
+      try {
+        setWardrobe(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to load wardrobe");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('myootd_wardrobe', JSON.stringify(wardrobe));
+  }, [wardrobe]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [step]);
+
+  const handleLocationNext = (loc: string, weather: any) => {
+    setPrefs({ ...prefs, location: loc });
+    setWeatherInfo(weather);
+    setStep('occasion');
+  };
+
+  const handleOccasionNext = (occ: 'Casual' | 'Formal' | 'Semi-formal') => {
+    setPrefs({ ...prefs, occasion: occ });
+    setStep('closet');
+  };
+
+  const handleClosetNext = async (uploadedPhoto: UserPhoto | null, color: string) => {
+    const photoToAnalyze = uploadedPhoto || wardrobe[0];
+    
+    if (!photoToAnalyze) {
+      setError("Please add at least one item to your Wardrobe.");
+      setStep('wardrobe');
+      return;
+    }
+
+    setPhoto(photoToAnalyze);
+    const updatedPrefs = { ...prefs, preferredColor: color };
+    setPrefs(updatedPrefs);
+    
+    if (uploadedPhoto && !wardrobe.find(item => item.id === uploadedPhoto.id)) {
+      setWardrobe(prev => [...prev, uploadedPhoto]);
+    }
+
+    setStep('analyzing');
+    
+    try {
+      const result = await analyzeStyle(photoToAnalyze.base64, photoToAnalyze.mimeType, updatedPrefs, weatherInfo);
+      setAnalysis(result);
+      const recs = await getOutfitRecommendations(result, updatedPrefs);
+      setRecommendations(recs);
+      setStep('result');
+    } catch (err: any) {
+      setError(err.message || "Synthesis interrupted.");
+      setStep('location');
+    }
+  };
+
+  const addClosetItem = (item: UserPhoto) => {
+    setWardrobe(prev => [...prev, item]);
+  };
+
+  const deleteClosetItem = (id: string) => {
+    setWardrobe(prev => prev.filter(item => item.id !== id));
+  };
+
+  const selectItemForStyling = (item: UserPhoto) => {
+    setPhoto(item);
+    setStep('location'); 
+  };
+
+  const reset = () => {
+    setStep('location');
+    setPhoto(null);
+    setAnalysis(null);
+    setRecommendations([]);
+    setError(null);
+    setWeatherInfo(null); 
+  };
+
+  const getBackgroundColor = () => {
+    if (step === 'location' || step === 'wardrobe' || !weatherInfo?.season) return '#faf9f6';
+    
+    const theme = SEASON_THEMES[weatherInfo.season as keyof typeof SEASON_THEMES];
+    if (step === 'occasion') return theme.light;
+    if (step === 'closet' || step === 'analyzing') return theme.middle;
+    if (step === 'result') return theme.dark;
+    return '#faf9f6';
+  };
+
+  return (
+    <div 
+      className="min-h-screen text-stone-900 selection:bg-stone-950 selection:text-white pb-10 transition-colors duration-1000 relative"
+      style={{ backgroundColor: getBackgroundColor() }}
+    >
+      <Header 
+        currentStep={step} 
+        onLogoClick={reset} 
+        onClosetClick={() => setStep('wardrobe')} 
+      />
+      
+      <SeasonalParticles season={weatherInfo?.season || null} currentStep={step} />
+
+      <main className="max-w-7xl mx-auto px-6 pt-40 pb-24 relative z-10">
+        {error && (
+          <div className="mb-12 p-8 bg-stone-950 text-white rounded-[2.5rem] flex items-center justify-between shadow-2xl animate-in slide-in-from-top-4 duration-500">
+            <div className="flex items-center space-x-4">
+               <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center">
+                 <Info className="w-5 h-5" />
+               </div>
+               <p className="text-sm font-bold uppercase tracking-widest">{error}</p>
+            </div>
+            <button onClick={() => setError(null)} className="text-[10px] uppercase font-black tracking-widest px-6 py-2 border border-white/20 rounded-full hover:bg-white/10 transition-colors">Dismiss</button>
+          </div>
+        )}
+
+        {step === 'location' && <StepLocation onNext={handleLocationNext} />}
+        {step === 'occasion' && <StepOccasion onBack={() => setStep('location')} onNext={handleOccasionNext} />}
+        {step === 'closet' && <StepCloset wardrobe={wardrobe} onBack={() => setStep('occasion')} onNext={handleClosetNext} />}
+        {step === 'wardrobe' && (
+          <div className="bg-white rounded-[4rem] p-12 shadow-sm relative z-10">
+            <WardrobeView 
+              items={wardrobe} 
+              onAddItem={addClosetItem} 
+              onDeleteItem={deleteClosetItem}
+              onSelectItem={selectItemForStyling}
+            />
+          </div>
+        )}
+        {step === 'analyzing' && <AnalysisLoader />}
+        {step === 'result' && photo && analysis && (
+          <ResultView photo={photo} analysis={analysis} recommendations={recommendations} prefs={prefs} onReset={reset} />
+        )}
+      </main>
+
+      <footer className="max-w-7xl mx-auto px-6 py-20 border-t border-stone-100 flex flex-col items-center space-y-6 relative z-10">
+        <div className="flex items-center space-x-2 opacity-30">
+          <Sparkles className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.4em]">MYOOTD Couture Studio</span>
+        </div>
+        <p className="text-[8px] font-bold uppercase tracking-[0.2em] text-stone-300">Curating style through neural synthesis • 2025 Edition</p>
+      </footer>
+    </div>
+  );
+}
+</file>
+
+<file path="website/index.html">
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title> MyOOTD- Your Personal Stylist</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #faf9f6;
+      }
+      .font-serif {
+        font-family: 'Playfair Display', serif;
+      }
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #d1d1d1;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #a1a1a1;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^1.40.0",
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
+</file>
+
+<file path="website/index.tsx">
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+</file>
+
+<file path="website/metadata.json">
+{
+  "name": "MY OOTD",
+  "description": "A high-end AI fashion consultant that analyzes  your wadrobe to provide personalized style advice, color palette analysis, and outfit recommendations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
+</file>
+
+<file path="website/package.json">
+{
+  "name": "my-ootd",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@google/genai": "^1.40.0",
+    "lucide-react": "^0.563.0",
+    "react-dom": "^19.2.4",
+    "react": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
+</file>
+
+<file path="website/project.gitignore">
+node_modules
+dist
+.env
+.DS_Store
+</file>
+
+<file path="website/README.md">
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
+
+# Run and deploy your AI Studio app
+
+This contains everything you need to run your app locally.
+
+View your app in AI Studio: https://ai.studio/apps/drive/1WxSYy9N2lUHhvuh_rZfTsHcGJkuqT0XQ
+
+## Run Locally
+
+**Prerequisites:**  Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`
+</file>
+
+<file path="website/services/gemini.ts">
+import { GoogleGenAI, Type } from "@google/genai";
+import { StyleAnalysis, OutfitRecommendation, StylePreferences } from "../types";
+
+export const fetchWeather = async (location: string): Promise<{ context: string, type: 'sunny' | 'windy' | 'snowy' | 'cloudy' | 'raining', season: 'spring' | 'summer' | 'autumn' | 'winter', sources?: any[] }> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `Today is ${today}. Find the current weather, temperature, and current season (spring, summer, autumn, or winter) in ${location} based on this date and its hemisphere. 
+    Categorize the weather into exactly one of these five types: sunny, windy, snowy, cloudy, raining.
+    Return JSON: { "context": "Description like 'Clear, 22°C'", "type": "one of the five", "season": "one of the four seasons" }`,
+    config: {
+      tools: [{ googleSearch: {} }],
+      responseMimeType: "application/json"
+    }
+  });
+
+  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+
+  try {
+    const data = JSON.parse(response.text || "{}");
+    // Strictly validate season strings
+    const validSeasons = ['spring', 'summer', 'autumn', 'winter'];
+    if (!validSeasons.includes(data.season?.toLowerCase())) {
+      // Logic for fallback based on common months if AI fails
+      const month = new Date().getMonth(); // 0-11
+      if (month >= 2 && month <= 4) data.season = 'spring';
+      else if (month >= 5 && month <= 7) data.season = 'summer';
+      else if (month >= 8 && month <= 10) data.season = 'autumn';
+      else data.season = 'winter';
+    }
+    return { ...data, season: data.season.toLowerCase(), sources };
+  } catch {
+    return { context: "Unknown, 20°C", type: "sunny", season: "spring", sources };
+  }
+};
+
+export const analyzeStyle = async (
+  imageBase64: string, 
+  mimeType: string, 
+  prefs: StylePreferences,
+  weatherInfo: { context: string, type: string, season: string }
+): Promise<StyleAnalysis> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: {
+      parts: [
+        {
+          inlineData: {
+            data: imageBase64,
+            mimeType: mimeType,
+          },
+        },
+        {
+          text: `You are a world-class luxury wardrobe consultant. 
+          The user has uploaded an image of a piece of clothing from their closet.
+          Target Location: ${prefs.location}. 
+          Current Weather: ${weatherInfo.context}.
+          Current Season: ${weatherInfo.season}.
+          Target Occasion: ${prefs.occasion}.
+          Preferred Accent Color: ${prefs.preferredColor}.
+
+          Analyze the clothing piece in the photo. Identify its style, material, and vibe.
+          
+          Return a JSON object with:
+          - bodyType: (e.g., Which body types this specific piece flatters most)
+          - skinTone: (Which skin undertones this garment color complements best)
+          - recommendedColors: (Array of 5 hex color codes that PAIR well with this garment and the accent ${prefs.preferredColor})
+          - suggestedStyles: (Array of 3 styling aesthetics this piece fits into)
+          - vibeDescription: (A summary of how to style this piece specifically for the weather, season, and occasion)
+          - weatherContext: "${weatherInfo.context}"
+          - weatherType: "${weatherInfo.type}"`
+        }
+      ]
+    },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          bodyType: { type: Type.STRING },
+          skinTone: { type: Type.STRING },
+          recommendedColors: { type: Type.ARRAY, items: { type: Type.STRING } },
+          suggestedStyles: { type: Type.ARRAY, items: { type: Type.STRING } },
+          vibeDescription: { type: Type.STRING },
+          weatherContext: { type: Type.STRING },
+          weatherType: { type: Type.STRING }
+        },
+        required: ["bodyType", "skinTone", "recommendedColors", "suggestedStyles", "vibeDescription", "weatherContext", "weatherType"]
+      }
+    }
+  });
+
+  try {
+    return JSON.parse(response.text || "{}") as StyleAnalysis;
+  } catch (error) {
+    console.error("Failed to parse Gemini response", error);
+    throw new Error("Stylist was unable to process the wardrobe image. Please try again.");
+  }
+};
+
+export const getOutfitRecommendations = async (
+  analysis: StyleAnalysis, 
+  prefs: StylePreferences
+): Promise<OutfitRecommendation[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const prompt = `Based on this wardrobe analysis:
+  - Base Piece Attributes: ${analysis.vibeDescription}
+  - Weather: ${analysis.weatherContext}
+  - Location: ${prefs.location}
+  - Target Occasion: ${prefs.occasion}
+  - Suggested Pairing Palette: ${analysis.recommendedColors.join(', ')}
+  
+  Generate 3 complete outfit recommendations starting with the base piece provided in the image.
+  Describe exactly what other items to pair with it (shoes, trousers/skirts, accessories).`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            occasion: { type: Type.STRING },
+            keyItems: { type: Type.ARRAY, items: { type: Type.STRING } },
+          },
+          required: ["title", "description", "occasion", "keyItems"]
+        }
+      }
+    }
+  });
+
+  try {
+    const rawRecs = JSON.parse(response.text || "[]");
+    return rawRecs.map((rec: any, idx: number) => ({
+      ...rec,
+      imageUrl: `https://picsum.photos/seed/fashion-closet-${idx}-${Date.now()}/600/800`
+    }));
+  } catch (error) {
+    console.error("Failed to parse recommendations", error);
+    return [];
+  }
+};
+</file>
+
+<file path="website/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  }
+}
+</file>
+
+<file path="website/types.ts">
+export interface StylePreferences {
+  location: string;
+  occasion: 'Casual' | 'Formal' | 'Semi-formal';
+  preferredColor: string;
+}
+
+export interface StyleAnalysis {
+  bodyType: string;
+  skinTone: string;
+  recommendedColors: string[];
+  suggestedStyles: string[];
+  vibeDescription: string;
+  weatherContext?: string;
+  weatherType?: 'sunny' | 'windy' | 'snowy' | 'cloudy' | 'raining';
+}
+
+export interface OutfitRecommendation {
+  title: string;
+  description: string;
+  occasion: string;
+  keyItems: string[];
+  imageUrl: string;
+}
+
+export type AppStep = 'location' | 'occasion' | 'closet' | 'analyzing' | 'result' | 'wardrobe';
+
+export interface UserPhoto {
+  url: string;
+  base64: string;
+  mimeType: string;
+  id?: string;
+}
+</file>
+
+<file path="website/vite.config.ts">
+import path from 'path';
+import { defineConfig, loadEnv } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig(({ mode }) => {
+    const env = loadEnv(mode, '.', '');
+    return {
+      server: {
+        port: 3000,
+        host: '0.0.0.0',
+      },
+      plugins: [react()],
+      define: {
+        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+      },
+      resolve: {
+        alias: {
+          '@': path.resolve(__dirname, '.'),
+        }
+      }
+    };
+});
+</file>
+
+<file path=".gitignore">
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Production
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+</file>
+
+<file path="app.py">
+
+</file>
+
+<file path="App.tsx">
+import React, { useState, useCallback, useEffect } from 'react';
+import { 
+  Upload, 
+  Sparkles, 
+  ChevronRight, 
+  RotateCcw, 
+  Palette, 
+  Info,
+  Maximize2,
+  Heart, 
+  Share2,
+  MapPin,
+  Briefcase,
+  Check,
+  ArrowLeft,
+  Shirt,
+  Search,
+  Cloud,
+  Sun,
+  CloudRain,
+  Snowflake,
+  Wind,
+  Plus,
+  Trash2,
+  ExternalLink,
+  Loader2,
+  Pocket,
+  Wind as WindIcon,
+  ShoppingBag
+} from 'lucide-react';
+import { fetchWeather, analyzeStyle, getOutfitRecommendations } from './services/gemini';
+import { AppStep, UserPhoto, StyleAnalysis, OutfitRecommendation, StylePreferences } from './types';
+
+const STANDARD_COLORS = [
+  { name: 'Noir', hex: '#000000' },
+  { name: 'Albâtre', hex: '#FFFFFF' },
+  { name: 'Marine', hex: '#000080' },
+  { name: 'Ardoise', hex: '#4A4E52' },
+  { name: 'Gris Perle', hex: '#D3D3D3' },
+  { name: 'Beige', hex: '#F5F5DC' },
+  { name: 'Chameau', hex: '#C19A6B' },
+  { name: 'Olive', hex: '#556B2F' },
+  { name: 'Bordeaux', hex: '#800020' },
+];
+
+const SEASON_THEMES = {
+  spring: { light: '#f0fdf4', middle: '#dcfce7', dark: '#bbf7d0' },
+  summer: { light: '#fffbeb', middle: '#fef3c7', dark: '#fde68a' },
+  autumn: { light: '#fff7ed', middle: '#ffedd5', dark: '#fed7aa' },
+  winter: { light: '#f0f9ff', middle: '#e0f2fe', dark: '#bae6fd' },
+};
+
+const STEPS: AppStep[] = ['location', 'occasion', 'closet', 'analyzing', 'result', 'wardrobe'];
+
+const SeasonalParticles: React.FC<{ season: 'spring' | 'summer' | 'autumn' | 'winter' | null, currentStep: AppStep }> = ({ season, currentStep }) => {
+  if (!season || currentStep === 'wardrobe') return null;
+
+  const particles = Array.from({ length: 30 });
+
+  return (
+    <div className="fixed inset-0 pointer-events-none z-[1] overflow-hidden opacity-70 select-none">
+      <style>{`
+        @keyframes seasonal-drift {
+          0% { transform: translateX(-10vw) translateY(0) rotate(0deg); opacity: 0; }
+          20% { opacity: 0.9; }
+          80% { opacity: 0.9; }
+          100% { transform: translateX(110vw) translateY(15vh) rotate(360deg); opacity: 0; }
+        }
+        @keyframes seasonal-float-up {
+          0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 0; }
+          20% { opacity: 1; }
+          80% { opacity: 1; }
+          100% { transform: translateY(-130vh) translateX(80px) rotate(180deg); opacity: 0; }
+        }
+        @keyframes seasonal-sway-fall {
+          0% { transform: translateY(-10vh) translateX(0) rotate(0deg); opacity: 0; }
+          20% { opacity: 1; }
+          50% { transform: translateY(50vh) translateX(70px) rotate(180deg); }
+          80% { opacity: 1; }
+          100% { transform: translateY(110vh) translateX(-40px) rotate(360deg); opacity: 0; }
+        }
+        @keyframes seasonal-snow-pure {
+          0% { transform: translateY(-10vh) translateX(0); opacity: 0; }
+          20% { opacity: 1; }
+          100% { transform: translateY(110vh) translateX(20px); opacity: 0; }
+        }
+        .particle { position: absolute; pointer-events: none; text-shadow: 0 0 10px rgba(255,255,255,0.5); }
+      `}</style>
+      {particles.map((_, i) => {
+        const left = `${Math.random() * 100}%`;
+        const delay = `${i * 0.8}s`;
+        const duration = `${10 + Math.random() * 12}s`;
+        const size = `${24 + Math.random() * 20}px`;
+
+        let icon = '';
+        let animation = '';
+
+        switch(season) {
+          case 'spring':
+            icon = '🍃';
+            animation = `seasonal-drift ${duration} infinite linear`;
+            break;
+          case 'summer':
+            icon = '🌸';
+            animation = `seasonal-float-up ${duration} infinite ease-out`;
+            break;
+          case 'autumn':
+            icon = '🍂';
+            animation = `seasonal-sway-fall ${duration} infinite linear`;
+            break;
+          case 'winter':
+            icon = '❄️';
+            animation = `seasonal-snow-pure ${duration} infinite linear`;
+            break;
+        }
+
+        return (
+          <span 
+            key={`${season}-${i}`} 
+            className="particle" 
+            style={{ 
+              left, 
+              fontSize: size,
+              animation, 
+              animationDelay: delay,
+              top: season === 'summer' ? 'auto' : '-10%',
+              bottom: season === 'summer' ? '-10%' : 'auto'
+            }}
+          >
+            {icon}
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
+const WeatherAnimation: React.FC<{ type: string }> = ({ type }) => {
+  const baseClass = "w-32 h-32 flex items-center justify-center relative mx-auto";
+  
+  switch (type) {
+    case 'sunny':
+      return (
+        <div className={baseClass}>
+          <div className="absolute inset-0 bg-yellow-100 rounded-full blur-3xl opacity-20 animate-pulse"></div>
+          <Sun className="w-20 h-20 text-yellow-400 animate-[spin_10s_linear_infinite]" />
+        </div>
+      );
+    case 'raining':
+      return (
+        <div className={baseClass}>
+          <CloudRain className="w-20 h-20 text-blue-400" />
+          <div className="absolute flex space-x-4 pt-12">
+            <div className="w-0.5 h-6 bg-blue-300 animate-bounce delay-75"></div>
+            <div className="w-0.5 h-8 bg-blue-300 animate-bounce delay-150"></div>
+          </div>
+        </div>
+      );
+    case 'snowy':
+      return (
+        <div className={baseClass}>
+          <Snowflake className="w-20 h-20 text-slate-300 animate-pulse" />
+        </div>
+      );
+    case 'windy':
+      return (
+        <div className={baseClass}>
+          <WindIcon className="w-20 h-20 text-stone-300 animate-pulse" />
+        </div>
+      );
+    case 'cloudy':
+    default:
+      return (
+        <div className={baseClass}>
+          <Cloud className="w-20 h-20 text-stone-400 animate-pulse" />
+        </div>
+      );
+  }
+};
+
+const Header: React.FC<{ currentStep: AppStep, onLogoClick?: () => void, onClosetClick?: () => void }> = ({ currentStep, onLogoClick, onClosetClick }) => {
+  const stepIndex = STEPS.indexOf(currentStep);
+  const progress = ((stepIndex + 1) / STEPS.length) * 100;
+
+  return (
+    <header className="fixed top-0 left-0 right-0 z-50">
+      <div className="bg-white/80 backdrop-blur-xl border-b border-stone-100">
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="flex items-center space-x-3 cursor-pointer group" onClick={onLogoClick}>
+            <div className="w-10 h-10 bg-stone-950 rounded-xl flex items-center justify-center rotate-3 shadow-lg shadow-stone-200 group-hover:rotate-0 transition-transform">
+              <span className="text-white text-lg font-serif font-bold italic">M</span>
+            </div>
+            <div>
+              <h1 className="font-serif text-2xl font-black tracking-tighter text-stone-900 leading-none uppercase">MYOOTD</h1>
+              <p className="text-[10px] font-bold tracking-[0.2em] text-stone-400 uppercase">AI Couture Studio</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-6">
+            <nav className="hidden md:flex items-center space-x-8">
+              {['Location', 'Occasion', 'Wardrobe', 'Review'].map((s, i) => (
+                <div key={s} className="flex items-center space-x-2">
+                  <span className={`text-[9px] font-black uppercase tracking-widest ${i <= stepIndex ? 'text-stone-900' : 'text-stone-300'}`}>
+                    {s}
+                  </span>
+                  {i < 3 && <div className={`w-1 h-1 rounded-full ${i < stepIndex ? 'bg-stone-900' : 'bg-stone-200'}`} />}
+                </div>
+              ))}
+            </nav>
+            <button 
+              onClick={onClosetClick}
+              className="bg-stone-950 text-white px-6 py-2.5 rounded-full text-xs font-bold uppercase tracking-wider hover:bg-stone-800 transition-all active:scale-95 flex items-center space-x-2"
+            >
+              <Shirt className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">My Wardrobe</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="w-full h-0.5 bg-stone-50">
+        <div 
+          className="h-full bg-stone-950 transition-all duration-1000 ease-out"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </header>
+  );
+};
+
+const WardrobeView: React.FC<{ 
+  items: UserPhoto[], 
+  onAddItem: (item: UserPhoto) => void,
+  onDeleteItem: (id: string) => void,
+  onSelectItem?: (item: UserPhoto) => void 
+}> = ({ items, onAddItem, onDeleteItem, onSelectItem }) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        onAddItem({
+          id: Math.random().toString(36).substr(2, 9),
+          url: reader.result as string,
+          base64: (reader.result as string).split(',')[1],
+          mimeType: file.type
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto py-10 space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-1000">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-stone-200 pb-12">
+        <div className="space-y-4">
+          <h2 className="text-6xl font-serif text-stone-900 tracking-tighter leading-none">My Wardrobe</h2>
+          <p className="text-stone-400 text-sm font-light max-w-md">Your curated digital wardrobe, ready for AI synthesis and style exploration.</p>
+        </div>
+        <div className="relative group">
+          <button className="bg-stone-950 text-white px-10 py-5 rounded-2xl text-[10px] font-bold uppercase tracking-widest shadow-2xl hover:bg-stone-800 transition-all flex items-center space-x-3">
+            <Plus className="w-4 h-4" />
+            <span>Import Collection</span>
+          </button>
+          <input 
+            type="file" 
+            accept="image/*" 
+            onChange={handleFileChange} 
+            className="absolute inset-0 opacity-0 cursor-pointer" 
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-8">
+        {items.map((item) => (
+          <div key={item.id} className="group relative aspect-[3/4] bg-white rounded-3xl overflow-hidden border border-stone-100 shadow-sm hover:shadow-2xl transition-all duration-700">
+            <img src={item.url} className="w-full h-full object-contain p-6 group-hover:scale-105 transition-transform duration-700" alt="Closet Item" />
+            <div className="absolute inset-0 bg-stone-950/0 group-hover:bg-stone-950/60 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100 space-x-3 backdrop-blur-[2px]">
+              {onSelectItem && (
+                <button 
+                  onClick={() => onSelectItem(item)}
+                  className="p-4 bg-white text-stone-950 rounded-full hover:scale-110 transition-transform shadow-lg"
+                  title="Style this item"
+                >
+                  <Sparkles className="w-5 h-5" />
+                </button>
+              )}
+              <button 
+                onClick={() => onDeleteItem(item.id!)}
+                className="p-4 bg-rose-500 text-white rounded-full hover:scale-110 transition-transform shadow-lg"
+                title="Delete item"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        ))}
+        {items.length === 0 && (
+          <div className="col-span-full py-32 text-center border-2 border-dashed border-stone-200 rounded-[4rem] space-y-6">
+            <div className="w-20 h-20 bg-stone-50 rounded-full flex items-center justify-center mx-auto">
+              <Shirt className="w-8 h-8 text-stone-200" />
+            </div>
+            <div className="space-y-2">
+              <p className="text-stone-900 font-serif text-xl">Wardrobe is empty</p>
+              <p className="text-stone-400 text-xs uppercase tracking-widest">Start uploading to begin your styling journey</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const StepLocation: React.FC<{ 
+  onNext: (loc: string, weather: any) => void 
+}> = ({ onNext }) => {
+  const [location, setLocation] = useState('');
+  const [weather, setWeather] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const checkWeather = async () => {
+    if (!location) return;
+    setLoading(true);
+    try {
+      const w = await fetchWeather(location);
+      setWeather(w);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto py-10 space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-1000 relative z-10">
+      <div className="space-y-6">
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-stone-100 rounded-full text-stone-500">
+          <MapPin className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.25em]">Phase 01: Weather</span>
+        </div>
+        <h2 className="text-8xl font-serif text-stone-900 leading-[0.85] tracking-tighter">
+          Select your <br /> <span className="italic font-normal text-stone-400">Atmosphere</span>
+        </h2>
+        <p className="text-stone-500 text-xl font-light leading-relaxed max-w-2xl">
+          Our AI synchronizes with global weather patterns to ensure your aesthetic is as functional as it is refined.
+        </p>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-12 items-start -mt-4">
+        <div className="flex flex-col pt-24">
+          <div className="relative group w-full">
+            <input 
+              type="text" 
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && checkWeather()}
+              placeholder="Search city (e.g., Paris, Tokyo)"
+              className="w-full bg-white border border-stone-200 rounded-[2.5rem] py-10 px-12 text-2xl text-stone-900 focus:ring-4 focus:ring-stone-950/5 outline-none shadow-xl transition-all font-serif italic"
+            />
+            <button 
+              onClick={checkWeather}
+              disabled={!location || loading}
+              className="absolute right-5 top-5 bottom-5 px-10 bg-stone-950 text-white rounded-[1.8rem] font-bold uppercase tracking-widest text-[11px] hover:bg-stone-800 transition-all flex items-center space-x-3 disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              <span>{loading ? 'Synthesizing' : 'SYNC WEATHER'}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-12 px-10 pt-16">
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <Pocket className="w-16 h-16" strokeWidth={1} />
+               <span className="text-[10px] font-black uppercase tracking-[0.4em] text-stone-500">Outerwear</span>
+            </div>
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <ShoppingBag className="w-16 h-16" strokeWidth={1} />
+               <span className="text-[10px] font-black uppercase tracking-[0.4em] text-stone-500">Accessories</span>
+            </div>
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <Shirt className="w-16 h-16" strokeWidth={1} />
+               <span className="text-[10px] font-black uppercase tracking-[0.4em] text-stone-500">Base Layers</span>
+            </div>
+            <div className="flex flex-col items-center space-y-4 opacity-20 hover:opacity-100 transition-opacity">
+               <WindIcon className="w-16 h-16" strokeWidth={1} />
+               <span className="text-[10px] font-black uppercase tracking-[0.4em] text-stone-500">Atmosphere</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center justify-center p-12 bg-white rounded-[4rem] border border-stone-100 min-h-[450px] shadow-2xl relative overflow-hidden group w-full">
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-stone-950/10 to-transparent" />
+          {weather ? (
+            <div className="text-center animate-in zoom-in duration-1000 flex flex-col items-center justify-center h-full space-y-8">
+              <WeatherAnimation type={weather.type} />
+              <div className="space-y-4">
+                <p className="text-[11px] font-black uppercase tracking-[0.4em] text-stone-400">WEATHER SYNC SUCCESS</p>
+                <div className="flex items-center justify-center space-x-6">
+                  <h3 className="text-6xl font-serif text-stone-900 tracking-tighter">{weather.context}</h3>
+                  <button 
+                    onClick={() => onNext(location, weather)}
+                    className="group bg-stone-950 text-white w-14 h-14 rounded-full flex items-center justify-center shadow-xl hover:scale-110 transition-all active:scale-95"
+                  >
+                    <ChevronRight className="w-6 h-6" />
+                  </button>
+                </div>
+                {weather.sources && (
+                  <div className="flex flex-wrap justify-center gap-4 mt-2">
+                    {weather.sources.map((chunk: any, i: number) => (
+                      chunk.web && (
+                        <a key={i} href={chunk.web.uri} target="_blank" rel="noopener noreferrer" className="inline-flex items-center space-x-1 text-[9px] uppercase font-bold text-stone-400 hover:text-stone-950 transition-colors">
+                          <ExternalLink className="w-2.5 h-2.5" />
+                          <span>SOURCE {i+1}</span>
+                        </a>
+                      )
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center space-y-8 opacity-20 group-hover:opacity-40 transition-opacity duration-700">
+              <div className="relative">
+                <Cloud className="w-32 h-32 mx-auto text-stone-400" strokeWidth={1} />
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-stone-400 rounded-full animate-ping" />
+              </div>
+              <p className="text-xs font-black uppercase tracking-[0.5em] text-stone-500">AWAITING GEO-COORDINATION</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const StepOccasion: React.FC<{ 
+  onBack: () => void, 
+  onNext: (occ: 'Casual' | 'Formal' | 'Semi-formal') => void 
+}> = ({ onBack, onNext }) => {
+  const [occ, setOcc] = useState<'Casual' | 'Formal' | 'Semi-formal' | ''>('');
+
+  const occasions = [
+    { name: 'Casual', icon: <Shirt className="w-6 h-6" />, desc: 'Relaxed daily elegance' },
+    { name: 'Formal', icon: <Maximize2 className="w-6 h-6" />, desc: 'Structured sophistication' },
+    { name: 'Semi-formal', icon: <Briefcase className="w-6 h-6" />, desc: 'Modern professional edge' }
+  ];
+
+  return (
+    <div className="max-w-5xl mx-auto py-10 space-y-16 animate-in fade-in slide-in-from-right-10 duration-1000 relative z-10">
+      <div className="space-y-6 text-center">
+        <button onClick={onBack} className="flex items-center space-x-3 text-stone-400 mx-auto hover:text-stone-950 transition-colors mb-6">
+          <ArrowLeft className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest">Back to Weather</span>
+        </button>
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-stone-100 rounded-full text-stone-500">
+          <Sparkles className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.25em]">Phase 02: Narrative</span>
+        </div>
+        <h2 className="text-8xl font-serif text-stone-900 leading-[0.85] tracking-tighter">
+          Define the <br /> <span className="italic font-normal text-stone-400">Occasion</span>
+        </h2>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-8">
+        {occasions.map((item) => (
+          <button
+            key={item.name}
+            onClick={() => setOcc(item.name as any)}
+            className={`group p-12 rounded-[3.5rem] border text-left transition-all relative overflow-hidden h-64 flex flex-col justify-end bg-white border-stone-100 text-stone-900 hover:border-stone-950/20 shadow-sm ${
+              occ === item.name ? 'ring-4 ring-stone-950 ring-offset-4 scale-[1.02]' : ''
+            }`}
+          >
+            <div className={`absolute top-10 left-10 w-16 h-16 rounded-2xl flex items-center justify-center transition-all ${occ === item.name ? 'bg-stone-950 text-white rotate-12' : 'bg-stone-50 text-stone-400'}`}>
+              {item.icon}
+            </div>
+            <div className="space-y-2">
+               <span className="text-3xl font-serif leading-none">{item.name}</span>
+               <p className={`text-[10px] uppercase font-bold tracking-widest text-stone-300`}>{item.desc}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="flex justify-center pt-10">
+        <button 
+          onClick={() => onNext(occ as any)}
+          disabled={!occ}
+          className={`px-20 py-8 rounded-[2.5rem] text-[11px] font-black uppercase tracking-[0.4em] shadow-2xl transition-all flex items-center space-x-6 ${
+            occ ? 'bg-stone-950 text-white hover:bg-stone-800 hover:scale-105' : 'bg-stone-100 text-stone-300 cursor-not-allowed shadow-none'
+          }`}
+        >
+          <span>Open the Closet</span>
+          <ChevronRight className="w-5 h-5" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const StepCloset: React.FC<{ 
+  wardrobe: UserPhoto[],
+  onBack: () => void, 
+  onNext: (photo: UserPhoto | null, color: string) => void 
+}> = ({ wardrobe, onBack, onNext }) => {
+  const [color, setColor] = useState(STANDARD_COLORS[0].hex);
+
+  const handleSubmit = () => {
+    onNext(null, color);
+  };
+
+  const canSynthesize = wardrobe.length > 0;
+
+  return (
+    <div className="max-w-4xl mx-auto py-10 space-y-16 animate-in fade-in slide-in-from-right-10 duration-1000 relative z-10">
+      <div className="space-y-6 text-center">
+        <button onClick={onBack} className="flex items-center space-x-3 text-stone-400 mx-auto hover:text-stone-950 transition-colors mb-6">
+          <ArrowLeft className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest">BACK TO NARRATIVE</span>
+        </button>
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-stone-100 rounded-full text-stone-500">
+          <Sparkles className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.25em]">Phase 03: Preference</span>
+        </div>
+        <h2 className="text-8xl font-serif text-stone-900 leading-[0.85] tracking-tighter">
+          Select your <br /> <span className="italic font-normal text-stone-400">Foundation</span>
+        </h2>
+      </div>
+
+      <div className="max-w-xl mx-auto space-y-10">
+         <div className="bg-white p-12 rounded-[3.5rem] border border-stone-100 space-y-8 shadow-sm">
+            <label className="text-[10px] font-black uppercase tracking-[0.3em] text-stone-400 text-center block">Accent Palette Target</label>
+            <div className="grid grid-cols-3 gap-6">
+              {STANDARD_COLORS.map((c) => (
+                <button
+                  key={c.hex}
+                  onClick={() => setColor(c.hex)}
+                  className={`aspect-square rounded-2xl border-4 transition-all flex items-center justify-center shadow-sm ${
+                    color === c.hex ? 'border-stone-950 scale-110 shadow-xl' : 'border-transparent'
+                  }`}
+                  style={{ backgroundColor: c.hex }}
+                >
+                  {color === c.hex && <Check className={`w-5 h-5 ${c.hex === '#FFFFFF' || c.hex === '#D3D3D3' || c.hex === '#F5F5DC' ? 'text-stone-900' : 'text-white'}`} />}
+                </button>
+              ))}
+            </div>
+         </div>
+
+         <button 
+          onClick={handleSubmit}
+          disabled={!canSynthesize}
+          className={`w-full py-10 rounded-[2.5rem] text-[11px] font-black uppercase tracking-[0.4em] shadow-2xl transition-all flex items-center justify-center space-x-6 ${
+            canSynthesize ? 'bg-stone-950 text-white hover:bg-stone-800 hover:scale-105' : 'bg-stone-100 text-stone-300 cursor-not-allowed shadow-none'
+          }`}
+        >
+          <span>BEGIN STYLE SYNTHESIS</span>
+          <ChevronRight className="w-6 h-6" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const AnalysisLoader: React.FC = () => {
+  const [msgIndex, setMsgIndex] = useState(0);
+  const messages = [
+    "Analyzing garment structure...",
+    "Sampling texture & weave...",
+    "Consulting digital trend archives...",
+    "Matching seasonal color palettes...",
+    "Optimizing for regional climate...",
+    "Synthesizing the final lookbook..."
+  ];
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setMsgIndex((prev) => (prev + 1) % messages.length);
+    }, 2500);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[70vh] space-y-16 animate-in fade-in duration-1000 relative z-10">
+      <div className="relative">
+        <div className="w-56 h-56 border-[2px] border-stone-100 rounded-full animate-[spin_8s_linear_infinite] border-t-stone-950"></div>
+        <div className="w-48 h-48 border-[2px] border-stone-100 rounded-full animate-[spin_12s_linear_infinite_reverse] border-b-stone-950 absolute top-4 left-4"></div>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+          <Sparkles className="w-16 h-16 text-stone-950 animate-pulse" />
+        </div>
+      </div>
+      <div className="text-center space-y-6">
+        <h3 className="text-5xl font-serif text-stone-900 tracking-tighter italic">Fashion Synthesis in Progress</h3>
+        <div className="h-8 flex items-center justify-center overflow-hidden">
+          <p key={msgIndex} className="text-stone-400 text-xs font-black uppercase tracking-[0.5em] animate-in slide-in-from-bottom-4 duration-700">
+            {messages[msgIndex]}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ResultView: React.FC<{ 
+  photo: UserPhoto, 
+  analysis: StyleAnalysis, 
+  recommendations: OutfitRecommendation[],
+  prefs: StylePreferences,
+  onReset: () => void 
+}> = ({ photo, analysis, recommendations, prefs, onReset }) => {
+  return (
+    <div className="space-y-24 animate-in fade-in slide-in-from-right-10 duration-1000 pb-32 relative z-10">
+      <div className="flex flex-col md:flex-row items-end justify-between gap-10 pb-12 border-b border-stone-200">
+        <div className="space-y-6">
+          <button onClick={onReset} className="flex items-center space-x-3 text-stone-400 hover:text-stone-950 transition-colors text-[10px] font-black uppercase tracking-widest group">
+            <RotateCcw className="w-3.5 h-3.5 group-hover:-rotate-180 transition-transform duration-500" />
+            <span>New Consultation</span>
+          </button>
+          <h2 className="text-8xl font-serif text-stone-900 tracking-tighter leading-none">The <span className="italic font-normal text-stone-400">Lookbook</span></h2>
+        </div>
+        <div className="flex items-center gap-6">
+          <div className="text-right hidden sm:block">
+            <p className="text-[10px] font-black uppercase tracking-widest text-stone-300">Generated for</p>
+            <p className="text-xl font-serif">{prefs.location} • {prefs.occasion}</p>
+          </div>
+          <button className="bg-stone-950 text-white px-10 py-5 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-2xl hover:bg-stone-800 transition-all active:scale-95">
+            Export Synthesis
+          </button>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-12 gap-20">
+        <div className="lg:col-span-4 space-y-16">
+          <div className="relative aspect-[3/4] rounded-[3.5rem] overflow-hidden shadow-2xl group border-[12px] border-white bg-white">
+            <img src={photo.url} alt="Wardrobe Piece" className="w-full h-full object-contain p-4 group-hover:scale-110 transition-transform duration-1000" />
+            <div className="absolute bottom-6 left-6 right-6 p-6 bg-white/90 backdrop-blur-md rounded-3xl border border-stone-100 shadow-xl">
+               <p className="text-[9px] font-black uppercase tracking-widest text-stone-400 mb-1">Focal Item</p>
+               <h4 className="text-xl font-serif">Original Curation</h4>
+            </div>
+          </div>
+
+          <div className="space-y-10">
+            <div className="p-12 bg-white rounded-[3.5rem] border border-stone-100 shadow-sm space-y-8">
+              <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-stone-400">Technical Spec</h4>
+              <div className="space-y-8">
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-stone-300 mb-1">Body Type Synergy</span>
+                  <span className="text-lg font-serif">{analysis.bodyType}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-stone-300 mb-1">Skin Tone Match</span>
+                  <span className="text-lg font-serif">{analysis.skinTone}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-stone-300 mb-1">Environmental Context</span>
+                  <span className="text-lg font-serif">{analysis.weatherContext}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-12 bg-stone-950 rounded-[3.5rem] text-white space-y-8 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
+              <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-white/40">The Color Story</h4>
+              <div className="grid grid-cols-5 gap-3">
+                {analysis.recommendedColors.map((color, i) => (
+                  <div key={i} className="group relative aspect-[1/2]">
+                    <div className="w-full h-full rounded-2xl border border-white/20 transition-transform group-hover:scale-110 duration-500" style={{ backgroundColor: color }} />
+                    <span className="absolute -bottom-6 left-0 right-0 text-[8px] font-mono text-center text-white/30 group-hover:text-white transition-colors">{color}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-8 space-y-20">
+          <div className="space-y-12">
+            <h3 className="text-xs font-black uppercase tracking-[0.5em] text-stone-300">Style Ensembles</h3>
+            <div className="grid gap-12">
+              {recommendations.map((rec, idx) => (
+                <div key={idx} className="group bg-white rounded-[4rem] overflow-hidden border border-stone-100 flex flex-col md:flex-row shadow-sm hover:shadow-2xl transition-all duration-1000">
+                  <div className="md:w-5/12 relative overflow-hidden aspect-[4/5]">
+                    <img src={rec.imageUrl} alt={rec.title} className="w-full h-full object-cover transition-transform duration-[4s] group-hover:scale-110" />
+                    <div className="absolute top-8 left-8 p-3 bg-white/90 backdrop-blur-md rounded-2xl shadow-xl">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-stone-900">Concept 0{idx+1}</p>
+                    </div>
+                  </div>
+                  <div className="md:w-7/12 p-16 flex flex-col justify-center bg-white">
+                    <div className="space-y-8">
+                      <h4 className="text-5xl font-serif text-stone-950 tracking-tighter">{rec.title}</h4>
+                      <p className="text-stone-500 font-light leading-relaxed text-lg italic">"{rec.description}"</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function App() {
+  const [step, setStep] = useState<AppStep>('location');
+  const [prefs, setPrefs] = useState<StylePreferences>({ location: '', occasion: 'Casual', preferredColor: '#000000' });
+  const [weatherInfo, setWeatherInfo] = useState<any>(null);
+  const [photo, setPhoto] = useState<UserPhoto | null>(null);
+  const [wardrobe, setWardrobe] = useState<UserPhoto[]>([]);
+  const [analysis, setAnalysis] = useState<StyleAnalysis | null>(null);
+  const [recommendations, setRecommendations] = useState<OutfitRecommendation[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('myootd_wardrobe');
+    if (saved) {
+      try {
+        setWardrobe(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to load wardrobe");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('myootd_wardrobe', JSON.stringify(wardrobe));
+  }, [wardrobe]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [step]);
+
+  const handleLocationNext = (loc: string, weather: any) => {
+    setPrefs({ ...prefs, location: loc });
+    setWeatherInfo(weather);
+    setStep('occasion');
+  };
+
+  const handleOccasionNext = (occ: 'Casual' | 'Formal' | 'Semi-formal') => {
+    setPrefs({ ...prefs, occasion: occ });
+    setStep('closet');
+  };
+
+  const handleClosetNext = async (uploadedPhoto: UserPhoto | null, color: string) => {
+    const photoToAnalyze = uploadedPhoto || wardrobe[0];
+    
+    if (!photoToAnalyze) {
+      setError("Please add at least one item to your Wardrobe.");
+      setStep('wardrobe');
+      return;
+    }
+
+    setPhoto(photoToAnalyze);
+    const updatedPrefs = { ...prefs, preferredColor: color };
+    setPrefs(updatedPrefs);
+    
+    if (uploadedPhoto && !wardrobe.find(item => item.id === uploadedPhoto.id)) {
+      setWardrobe(prev => [...prev, uploadedPhoto]);
+    }
+
+    setStep('analyzing');
+    
+    try {
+      const result = await analyzeStyle(photoToAnalyze.base64, photoToAnalyze.mimeType, updatedPrefs, weatherInfo);
+      setAnalysis(result);
+      const recs = await getOutfitRecommendations(result, updatedPrefs);
+      setRecommendations(recs);
+      setStep('result');
+    } catch (err: any) {
+      setError(err.message || "Synthesis interrupted.");
+      setStep('location');
+    }
+  };
+
+  const addClosetItem = (item: UserPhoto) => {
+    setWardrobe(prev => [...prev, item]);
+  };
+
+  const deleteClosetItem = (id: string) => {
+    setWardrobe(prev => prev.filter(item => item.id !== id));
+  };
+
+  const selectItemForStyling = (item: UserPhoto) => {
+    setPhoto(item);
+    setStep('location'); 
+  };
+
+  const reset = () => {
+    setStep('location');
+    setPhoto(null);
+    setAnalysis(null);
+    setRecommendations([]);
+    setError(null);
+    setWeatherInfo(null); 
+  };
+
+  const getBackgroundColor = () => {
+    if (step === 'location' || step === 'wardrobe' || !weatherInfo?.season) return '#faf9f6';
+    
+    const theme = SEASON_THEMES[weatherInfo.season as keyof typeof SEASON_THEMES];
+    if (step === 'occasion') return theme.light;
+    if (step === 'closet' || step === 'analyzing') return theme.middle;
+    if (step === 'result') return theme.dark;
+    return '#faf9f6';
+  };
+
+  return (
+    <div 
+      className="min-h-screen text-stone-900 selection:bg-stone-950 selection:text-white pb-10 transition-colors duration-1000 relative"
+      style={{ backgroundColor: getBackgroundColor() }}
+    >
+      <Header 
+        currentStep={step} 
+        onLogoClick={reset} 
+        onClosetClick={() => setStep('wardrobe')} 
+      />
+      
+      <SeasonalParticles season={weatherInfo?.season || null} currentStep={step} />
+
+      <main className="max-w-7xl mx-auto px-6 pt-40 pb-24 relative z-10">
+        {error && (
+          <div className="mb-12 p-8 bg-stone-950 text-white rounded-[2.5rem] flex items-center justify-between shadow-2xl animate-in slide-in-from-top-4 duration-500">
+            <div className="flex items-center space-x-4">
+               <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center">
+                 <Info className="w-5 h-5" />
+               </div>
+               <p className="text-sm font-bold uppercase tracking-widest">{error}</p>
+            </div>
+            <button onClick={() => setError(null)} className="text-[10px] uppercase font-black tracking-widest px-6 py-2 border border-white/20 rounded-full hover:bg-white/10 transition-colors">Dismiss</button>
+          </div>
+        )}
+
+        {step === 'location' && <StepLocation onNext={handleLocationNext} />}
+        {step === 'occasion' && <StepOccasion onBack={() => setStep('location')} onNext={handleOccasionNext} />}
+        {step === 'closet' && <StepCloset wardrobe={wardrobe} onBack={() => setStep('occasion')} onNext={handleClosetNext} />}
+        {step === 'wardrobe' && (
+          <div className="bg-white rounded-[4rem] p-12 shadow-sm relative z-10">
+            <WardrobeView 
+              items={wardrobe} 
+              onAddItem={addClosetItem} 
+              onDeleteItem={deleteClosetItem}
+              onSelectItem={selectItemForStyling}
+            />
+          </div>
+        )}
+        {step === 'analyzing' && <AnalysisLoader />}
+        {step === 'result' && photo && analysis && (
+          <ResultView photo={photo} analysis={analysis} recommendations={recommendations} prefs={prefs} onReset={reset} />
+        )}
+      </main>
+
+      <footer className="max-w-7xl mx-auto px-6 py-20 border-t border-stone-100 flex flex-col items-center space-y-6 relative z-10">
+        <div className="flex items-center space-x-2 opacity-30">
+          <Sparkles className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-[0.4em]">MYOOTD Couture Studio</span>
+        </div>
+        <p className="text-[8px] font-bold uppercase tracking-[0.2em] text-stone-300">Curating style through neural synthesis • 2025 Edition</p>
+      </footer>
+    </div>
+  );
+}
+</file>
+
+<file path="generator.py">
+import os
+import io
+import json
+from PIL import Image
+from google import genai
+from dotenv import load_dotenv
+
+# 1. Setup Environment & Client
+# It's better to use a .env file, but for now we'll keep your key
+client = genai.Client(api_key="AIzaSyDr-2kbzzxVKrti_lMbI5RHdergrnWgFvY")
+
+def analyze_clothing(image_path):
+    """Analyzes a local image file using the Gemini API."""
+    # Open the image from your local folder
+    img = Image.open(image_path)
+    
+    prompt = (
+        "Act as a professional fashion cataloger. Analyze this image and generate a JSON object: "
+        "{id: 'item_XXX', name: 'string', category: ['Top', 'Bottom', 'Outerwear', 'Shoes', 'Accessory'], "
+        "warmth_rating: 1-5, formality: ['Casual', 'Semi-Formal', 'Formal'], image_path: 'assets/filename.jpg'}. "
+        "Return ONLY raw JSON."
+    )
+    
+    # 2. Generate Content
+    response = client.models.generate_content(
+        model="gemini-2.0-flash-lite", 
+        contents=[prompt, img]
+    )
+    
+    # Clean and return JSON
+    clean_json = response.text.replace('```json', '').replace('```', '').strip()
+    return clean_json
+
+# 3. Local Execution Logic
+if __name__ == "__main__":
+    # Point this to a real image file on your computer!
+    # Example: 'C:/Users/You/Desktop/shirt.jpg' or just 'shirt.jpg' if in the same folder
+    image_to_test = "clothes_item_1.jpg" 
+
+    if os.path.exists(image_to_test):
+        print(f"Analyzing {image_to_test}...")
+        result_json = analyze_clothing(image_to_test)
+        print("\n--- Extracted Wardrobe Data ---")
+        print(result_json)
+    else:
+        print(f"Error: Could not find the file '{image_to_test}' in your project folder.")
+</file>
+
+<file path="index.html">
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title> MyOOTD- Your Personal Stylist</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #faf9f6;
+      }
+      .font-serif {
+        font-family: 'Playfair Display', serif;
+      }
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #d1d1d1;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #a1a1a1;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^1.40.0",
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.3"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
+</file>
+
+<file path="index.tsx">
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+</file>
+
+<file path="metadata.json">
+{
+  "name": "MY OOTD",
+  "description": "A high-end AI fashion consultant that analyzes  your wadrobe to provide personalized style advice, color palette analysis, and outfit recommendations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
+</file>
+
+<file path="MyOOTD.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyOOTD | AI Couture Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,700&family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Outfit', sans-serif; background-color: #fdfaf6; color: #2d2d2d; }
+        .serif { font-family: 'Playfair Display', serif; }
+        
+        /* Interactive Elements */
+        .item-card { transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1); }
+        .item-card:hover { transform: translateY(-10px); box-shadow: 0 20px 40px rgba(165, 126, 93, 0.15); }
+        
+        /* Custom Gradient for "Stylist Note" */
+        .stylist-box {
+            background: linear-gradient(135deg, #fff9f5 0%, #f3e9dc 100%);
+            border-left: 6px solid #a57e5d; /* Terracotta Accent */
+        }
+
+        /* Modal Blur */
+        #modal.active { display: flex; backdrop-filter: blur(15px); }
+
+        .btn-gradient {
+            background: linear-gradient(90deg, #2d2d2d 0%, #4a4a4a 100%);
+            transition: all 0.3s ease;
+        }
+        .btn-gradient:hover { background: linear-gradient(90deg, #a57e5d 0%, #c69c7c 100%); }
+    </style>
+</head>
+<body>
+
+    <div id="modal" onclick="this.classList.remove('active')" class="fixed inset-0 bg-stone-900/90 z-[100] hidden items-center justify-center p-8 cursor-pointer">
+        <div class="relative max-w-4xl w-full flex flex-col items-center">
+            <img id="modalImg" src="" class="max-h-[80vh] rounded-lg shadow-2xl mb-6">
+            <h2 id="modalTitle" class="serif text-stone-100 text-4xl italic tracking-wide"></h2>
+        </div>
+    </div>
+
+    <header class="bg-white border-b border-stone-100 py-10 px-8 shadow-sm">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8">
+            <div class="text-center md:text-left">
+                <h1 class="serif text-5xl text-[#a57e5d] leading-none">MyOOTD</h1>
+                <p class="text-[10px] uppercase tracking-[0.4em] font-bold mt-3 text-stone-400 font-sans">AI Couture Studio</p>
+            </div>
+            
+            <div id="weatherWidget" class="bg-[#f3e9dc] px-8 py-5 flex items-center gap-8 rounded-2xl shadow-inner border border-stone-200/50">
+                <div class="text-right">
+                    <p id="displayCity" class="font-bold uppercase text-[10px] tracking-widest text-stone-500 mb-1">Current Locale</p>
+                    <p id="displayTemp" class="serif text-3xl text-[#a57e5d] italic">--°C</p>
+                </div>
+                <div class="h-12 w-[1px] bg-stone-300/50"></div>
+                <div class="text-left">
+                    <p class="font-bold uppercase text-[10px] tracking-widest text-stone-500 mb-1">Occasion</p>
+                    <p id="displayFormality" class="font-medium text-stone-800 uppercase text-xs tracking-wider">---</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <section class="max-w-7xl mx-auto p-12">
+        <div class="bg-white rounded-[2rem] p-10 shadow-xl shadow-stone-200/50 flex flex-wrap gap-12 items-end justify-center">
+            <div class="flex-1 min-w-[220px]">
+                <label class="block text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-3">City Name</label>
+                <input id="cityInput" type="text" placeholder="Paris, FR" class="w-full bg-stone-50 border-none rounded-xl p-4 text-sm focus:ring-2 focus:ring-[#a57e5d] outline-none transition-all">
+            </div>
+            <div class="flex-1 min-w-[220px]">
+                <label class="block text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-3">Formality</label>
+                <select id="formalityInput" class="w-full bg-stone-50 border-none rounded-xl p-4 text-sm focus:ring-2 focus:ring-[#a57e5d] outline-none cursor-pointer">
+                    <option value="Casual">Casual</option>
+                    <option value="Semi-Formal">Semi-Formal</option>
+                    <option value="Formal">Formal</option>
+                </select>
+            </div>
+            <div class="flex-1 min-w-[220px]">
+                <label class="block text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-3">Color Preference</label>
+                <input id="colorInput" type="text" placeholder="Emerald, Cream..." class="w-full bg-stone-50 border-none rounded-xl p-4 text-sm focus:ring-2 focus:ring-[#a57e5d] outline-none transition-all">
+            </div>
+            <button onclick="getOutfits()" class="btn-gradient text-white px-14 py-4 rounded-xl text-xs font-bold uppercase tracking-widest shadow-lg shadow-stone-300">
+                Generate Looks
+            </button>
+        </div>
+    </section>
+
+    <main class="max-w-7xl mx-auto p-8 pb-32">
+        <div id="status" class="hidden text-center py-24">
+            <p class="serif text-4xl italic text-[#a57e5d] animate-pulse">Curating your collection...</p>
+        </div>
+        <div id="outfitGrid" class="space-y-40">
+            </div>
+    </main>
+
+    <script>
+        function showModal(url, name) {
+            const modal = document.getElementById('modal');
+            document.getElementById('modalImg').src = url;
+            document.getElementById('modalTitle').innerText = name;
+            modal.classList.add('active');
+        }
+
+        async function getOutfits() {
+            const city = document.getElementById('cityInput').value || 'Algiers';
+            const formality = document.getElementById('formalityInput').value;
+            const color = document.getElementById('colorInput').value;
+            const grid = document.getElementById('outfitGrid');
+            const status = document.getElementById('status');
+
+            status.classList.remove('hidden');
+            grid.innerHTML = '';
+
+            try {
+                let url = `http://127.0.0.1:8000/top-outfits?city=${city}&formality=${formality}`;
+                if (color) url += `&color=${color}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                // Update Widget Info
+                document.getElementById('displayCity').innerText = data.city;
+                document.getElementById('displayTemp').innerText = `${data.temperature}°C`;
+                document.getElementById('displayFormality').innerText = data.formality;
+
+                status.classList.add('hidden');
+
+                data.top_outfits.forEach((outfit, index) => {
+                    const row = document.createElement('div');
+                    row.className = "flex flex-col lg:flex-row gap-16 items-center";
+
+                    const imagesHtml = outfit.items.map(item => `
+                        <div class="item-card relative group cursor-zoom-in overflow-hidden rounded-[2rem] border-8 border-white shadow-lg" onclick="showModal('${item.image_url}', '${item.name}')">
+                            <img src="${item.image_url}" class="w-full h-[400px] object-cover transition-transform duration-1000 group-hover:scale-110">
+                            <div class="absolute inset-0 bg-gradient-to-t from-[#a57e5d]/80 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 flex items-end p-8">
+                                <span class="text-white text-sm font-medium tracking-wide">
+                                    ${item.name}
+                                </span>
+                            </div>
+                        </div>
+                    `).join('');
+
+                    row.innerHTML = `
+                        <div class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
+                            ${imagesHtml}
+                        </div>
+                        <div class="w-full lg:w-1/3 text-center lg:text-left">
+                            <div class="flex items-center justify-center lg:justify-start gap-4 mb-6">
+                                <span class="h-[1px] w-12 bg-[#a57e5d]"></span>
+                                <span class="text-[10px] font-bold text-[#a57e5d] uppercase tracking-[0.4em]">Look 0${index + 1}</span>
+                            </div>
+                            <h2 class="serif text-5xl mb-8 leading-tight">Couture <br><span class="italic text-stone-400">Edit</span></h2>
+                            <div class="stylist-box p-10 rounded-[2rem] shadow-sm text-left">
+                                <p class="serif text-xl italic leading-relaxed text-stone-700">
+                                    "${outfit.stylist_note}"
+                                </p>
+                            </div>
+                        </div>
+                    `;
+                    grid.appendChild(row);
+                });
+            } catch (error) {
+                status.innerHTML = "<p class='text-red-400'>Styling session interrupted. Check your backend terminal.</p>";
+            }
+        }
+    </script>
+</body>
+</html>
+</file>
+
+<file path="package.json">
+{
+  "name": "my-ootd",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@google/genai": "^1.40.0",
+    "lucide-react": "^0.463.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.1"
+  }
+}
+</file>
+
+<file path="services/gemini.ts">
+import { GoogleGenAI, Type } from "@google/genai";
+import { StyleAnalysis, OutfitRecommendation, StylePreferences } from "../types";
+
+export const fetchWeather = async (location: string): Promise<{ context: string, type: 'sunny' | 'windy' | 'snowy' | 'cloudy' | 'raining', season: 'spring' | 'summer' | 'autumn' | 'winter', sources?: any[] }> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `Today is ${today}. Find the current weather, temperature, and current season (spring, summer, autumn, or winter) in ${location} based on this date and its hemisphere. 
+    Categorize the weather into exactly one of these five types: sunny, windy, snowy, cloudy, raining.
+    Return JSON: { "context": "Description like 'Clear, 22°C'", "type": "one of the five", "season": "one of the four seasons" }`,
+    config: {
+      tools: [{ googleSearch: {} }],
+      responseMimeType: "application/json"
+    }
+  });
+
+  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+
+  try {
+    const data = JSON.parse(response.text || "{}");
+    // Strictly validate season strings
+    const validSeasons = ['spring', 'summer', 'autumn', 'winter'];
+    if (!validSeasons.includes(data.season?.toLowerCase())) {
+      // Logic for fallback based on common months if AI fails
+      const month = new Date().getMonth(); // 0-11
+      if (month >= 2 && month <= 4) data.season = 'spring';
+      else if (month >= 5 && month <= 7) data.season = 'summer';
+      else if (month >= 8 && month <= 10) data.season = 'autumn';
+      else data.season = 'winter';
+    }
+    return { ...data, season: data.season.toLowerCase(), sources };
+  } catch {
+    return { context: "Unknown, 20°C", type: "sunny", season: "spring", sources };
+  }
+};
+
+export const analyzeStyle = async (
+  imageBase64: string, 
+  mimeType: string, 
+  prefs: StylePreferences,
+  weatherInfo: { context: string, type: string, season: string }
+): Promise<StyleAnalysis> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: {
+      parts: [
+        {
+          inlineData: {
+            data: imageBase64,
+            mimeType: mimeType,
+          },
+        },
+        {
+          text: `You are a world-class luxury wardrobe consultant. 
+          The user has uploaded an image of a piece of clothing from their closet.
+          Target Location: ${prefs.location}. 
+          Current Weather: ${weatherInfo.context}.
+          Current Season: ${weatherInfo.season}.
+          Target Occasion: ${prefs.occasion}.
+          Preferred Accent Color: ${prefs.preferredColor}.
+
+          Analyze the clothing piece in the photo. Identify its style, material, and vibe.
+          
+          Return a JSON object with:
+          - bodyType: (e.g., Which body types this specific piece flatters most)
+          - skinTone: (Which skin undertones this garment color complements best)
+          - recommendedColors: (Array of 5 hex color codes that PAIR well with this garment and the accent ${prefs.preferredColor})
+          - suggestedStyles: (Array of 3 styling aesthetics this piece fits into)
+          - vibeDescription: (A summary of how to style this piece specifically for the weather, season, and occasion)
+          - weatherContext: "${weatherInfo.context}"
+          - weatherType: "${weatherInfo.type}"`
+        }
+      ]
+    },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          bodyType: { type: Type.STRING },
+          skinTone: { type: Type.STRING },
+          recommendedColors: { type: Type.ARRAY, items: { type: Type.STRING } },
+          suggestedStyles: { type: Type.ARRAY, items: { type: Type.STRING } },
+          vibeDescription: { type: Type.STRING },
+          weatherContext: { type: Type.STRING },
+          weatherType: { type: Type.STRING }
+        },
+        required: ["bodyType", "skinTone", "recommendedColors", "suggestedStyles", "vibeDescription", "weatherContext", "weatherType"]
+      }
+    }
+  });
+
+  try {
+    return JSON.parse(response.text || "{}") as StyleAnalysis;
+  } catch (error) {
+    console.error("Failed to parse Gemini response", error);
+    throw new Error("Stylist was unable to process the wardrobe image. Please try again.");
+  }
+};
+
+export const getOutfitRecommendations = async (
+  analysis: StyleAnalysis, 
+  prefs: StylePreferences
+): Promise<OutfitRecommendation[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const prompt = `Based on this wardrobe analysis:
+  - Base Piece Attributes: ${analysis.vibeDescription}
+  - Weather: ${analysis.weatherContext}
+  - Location: ${prefs.location}
+  - Target Occasion: ${prefs.occasion}
+  - Suggested Pairing Palette: ${analysis.recommendedColors.join(', ')}
+  
+  Generate 3 complete outfit recommendations starting with the base piece provided in the image.
+  Describe exactly what other items to pair with it (shoes, trousers/skirts, accessories).`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            occasion: { type: Type.STRING },
+            keyItems: { type: Type.ARRAY, items: { type: Type.STRING } },
+          },
+          required: ["title", "description", "occasion", "keyItems"]
+        }
+      }
+    }
+  });
+
+  try {
+    const rawRecs = JSON.parse(response.text || "[]");
+    return rawRecs.map((rec: any, idx: number) => ({
+      ...rec,
+      imageUrl: `https://picsum.photos/seed/fashion-closet-${idx}-${Date.now()}/600/800`
+    }));
+  } catch (error) {
+    console.error("Failed to parse recommendations", error);
+    return [];
+  }
+};
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  }
+}
+</file>
+
+<file path="types.ts">
+export interface StylePreferences {
+  location: string;
+  occasion: 'Casual' | 'Formal' | 'Semi-formal';
+  preferredColor: string;
+}
+
+export interface StyleAnalysis {
+  bodyType: string;
+  skinTone: string;
+  recommendedColors: string[];
+  suggestedStyles: string[];
+  vibeDescription: string;
+  weatherContext?: string;
+  weatherType?: 'sunny' | 'windy' | 'snowy' | 'cloudy' | 'raining';
+}
+
+export interface OutfitRecommendation {
+  title: string;
+  description: string;
+  occasion: string;
+  keyItems: string[];
+  imageUrl: string;
+}
+
+export type AppStep = 'location' | 'occasion' | 'closet' | 'analyzing' | 'result' | 'wardrobe';
+
+export interface UserPhoto {
+  url: string;
+  base64: string;
+  mimeType: string;
+  id?: string;
+}
+</file>
+
+<file path="vite.config.ts">
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 3000,
+  },
+});
+</file>
+
+<file path="README.md">
+# 🎩 MYOOTD — AI Couture Studio
+
+**MYOOTD** is a high-end digital style consultant powered by the Gemini 3 API. It analyzes your personal wardrobe to synthesize seasonal, weather-appropriate outfit recommendations with a focus on luxury aesthetics and functional elegance.
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![React](https://img.shields.io/badge/frontend-React-61dafb.svg)
+![AI](https://img.shields.io/badge/AI-Gemini_3-orange.svg)
+
+## ✨ Features
+
+- **Weather Synchronization**: Real-time atmospheric analysis using Google Search grounding.
+- **Seasonal Particles**: Immersive UI animations (Spring leaves, Winter snow) that respond to local climate.
+- **Wardrobe Synthesis**: AI-driven analysis of garment structure, color palettes, and body type synergy.
+- **Lookbook Generation**: Curated outfit ensembles with personalized "Vibe Descriptions."
+- **High-End UI**: A boutique-inspired interface using Playfair Display typography and a minimalist stone-palette design.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Node.js (v18 or higher)
+- A Google Gemini API Key (get one at [AI Studio](https://aistudio.google.com/))
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/your-username/my-ootd.git
+   cd my-ootd
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Configure Environment**
+   Create a `.env` file in the root directory:
+   ```env
+   VITE_GEMINI_API_KEY=your_actual_api_key_here
+   ```
+
+4. **Launch the Studio**
+   ```bash
+   npm run dev
+   ```
+
+## 🛠️ Tech Stack
+
+- **Framework**: React 19 (TSX)
+- **Styling**: Tailwind CSS
+- **AI**: Google GenAI SDK (@google/genai)
+- **Icons**: Lucide React
+- **Typography**: Playfair Display & Inter
+
+## 👗 How to Use
+
+1. **Sync Atmosphere**: Enter your current city to sync the studio with local weather.
+2. **Define Narrative**: Choose between Casual, Formal, or Semi-formal occasions.
+3. **Upload Closet**: Add photos of your favorite pieces to your digital wardrobe.
+4. **Synthesize**: Let the AI Stylist generate your personalized lookbook.
+
+---
+
+*Curating style through neural synthesis • 2025 Edition*
+</file>
+
+</files>

@@ -1,0 +1,13 @@
+{
+  "id": "item_0013",
+  "name": "Olive Green Utility Jacket",
+  "category": [
+    "Top",
+    "Outerwear"
+  ],
+  "warmth_rating": 4,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/clothes_item_13.jpg"
+}

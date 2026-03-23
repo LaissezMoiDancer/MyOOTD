@@ -1,0 +1,12 @@
+{
+  "id": "item_0006",
+  "name": "Red Plaid Flannel Shirt",
+  "category": [
+    "Top"
+  ],
+  "warmth_rating": 6,
+  "formality": [
+    "Casual"
+  ],
+  "image_path": "assets/clothes_item_6.jpg"
+}
